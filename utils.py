@@ -8,8 +8,27 @@ from typing import Optional, Callable, Any
 
 load_dotenv()
 
-def get_env_var(name, default=None):
-    return os.environ.get(name, default)
+
+# Try to import streamlit safely (not always available locally)
+try:
+    import streamlit as st
+except ImportError:
+    st = None
+
+def get_env_var(key: str, default=None):
+    """
+    Fetch environment variable:
+    1. From Streamlit secrets (if available)
+    2. Else from OS env (.env or system)
+    """
+    # Streamlit secrets (only available on Streamlit Cloud)
+    if st and hasattr(st, "secrets"):
+        if key in st.secrets:
+            return st.secrets[key]
+
+    # Local environment variable
+    return os.environ.get(key, default)
+
 
 # Shared DB connection
 
