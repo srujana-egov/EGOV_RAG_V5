@@ -7,7 +7,7 @@ st.set_page_config(page_title="RAG-TDD Demo", layout="wide")
 # -----------------------
 # UI
 # -----------------------
-st.title("📖 RAG-TDD Demo (DIGIT HCM Knowledge Base)")
+st.title("eGov RAG Test Bot - Elzan Test")
 
 query = st.text_input("Enter your question:", placeholder="e.g., How to pay with HCM?")
 
