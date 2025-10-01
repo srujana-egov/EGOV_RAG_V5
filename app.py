@@ -1,6 +1,6 @@
 import streamlit as st
-from src.generator import generate_rag_answer
-from src.retrieval import hybrid_retrieve_pg
+from generator import generate_rag_answer
+from retrieval import hybrid_retrieve_pg
 
 st.set_page_config(page_title="RAG-TDD Demo", layout="wide")
 
