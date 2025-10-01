@@ -2,7 +2,7 @@ import math
 from typing import Any, Dict, List, Tuple
 import numpy as np
 
-from src.utils import get_conn, get_env_var  # shared utils
+from utils import get_conn, get_env_var  # shared utils
 
 try:
     import psycopg2
