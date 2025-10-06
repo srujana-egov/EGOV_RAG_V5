@@ -7,7 +7,8 @@ st.set_page_config(page_title="RAG-TDD Demo", layout="wide")
 # -----------------------
 # UI
 # -----------------------
-st.title("eGov RAG Test Bot - Elzan Test")
+st.title("Tentative eGov RAG - As of Oct 6th, 2025")
+st.subheader("Important note: Work under progress, only answers questions until ACCESS subsection of HCM gitbook. Updated information on console and dashboard to be added.")
 
 query = st.text_input("Enter your question:", placeholder="e.g., How to pay with HCM?")
 
