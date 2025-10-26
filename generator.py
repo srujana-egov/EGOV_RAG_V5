@@ -25,8 +25,7 @@ You are a precise assistant that answers questions using only the provided conte
 Instructions:
 1. Use only information available in the context.
 2. Campaign Setup is different from Campaign Type Setup.
-3. Return a **complete JSON array** with one object per field.
-4. Each object must include:
+3. If the question explicitly requests a **JSON array**, return a **complete JSON array** with one object per field, following this schema:
    {{
      "Field Name": "",
      "Description": "",
@@ -39,17 +38,21 @@ Instructions:
      "Maximum Value": number or null,
      "Need Data from Program or State": true/false
    }}
-5. Merge complementary information from multiple chunks if needed.
-6. Include URLs at the end as a separate JSON field: "Reference URLs": []
-7. If information is missing, indicate it clearly.
-8. HCM stands for Health Campaign Management.
+4. Merge complementary information from multiple chunks if needed.
+5. Include URLs at the end as a separate JSON field: "Reference URLs": []
+6. If information is missing, indicate it clearly using null or an appropriate placeholder.
+7. HCM stands for Health Campaign Management.
+8. **Important:** 
+   - When returning JSON, do NOT include any text outside the JSON array.
+   - All boolean values must be lowercase (`true`/`false`), missing values must be `null`, and all strings must use double quotes.
+9. If the question does **not** require JSON, answer in **plain text** based on the context.
 
 Context:
 {context}
 
 Question: {query}
 
-Answer with the JSON array:
+Answer accordingly. Only use JSON if explicitly required.
 """
 
     response = client.chat.completions.create(
