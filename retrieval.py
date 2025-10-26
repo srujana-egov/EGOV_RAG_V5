@@ -2,7 +2,7 @@ import math
 from typing import Any, Dict, List, Tuple
 from collections import Counter, defaultdict
 
-from utils import get_conn, get_env_var  # your shared utils
+from utils import get_conn, get_env_var
 
 try:
     import psycopg2
@@ -75,7 +75,6 @@ def mmr_select_url_aware(scored: List[Any], q_vec=None, k: int = 10, lambda_: fl
     rels = [c.get("score", 0.0) for c in scored]
     urls = [c.get("meta", {}).get("url") for c in scored]
 
-    # Count chunks per URL for dynamic penalty
     url_count = Counter(urls)
 
     while avail and len(selected) < k:
@@ -87,7 +86,6 @@ def mmr_select_url_aware(scored: List[Any], q_vec=None, k: int = 10, lambda_: fl
                 sims = []
                 for j in selected:
                     sim = _cosine(vecs[i], vecs[j])
-                    # reduce penalty if same URL
                     if urls[i] and urls[j] and urls[i] == urls[j]:
                         factor = 0.2 + 0.1 / max(url_count[urls[i]], 1)
                         sim *= factor
@@ -128,14 +126,10 @@ def vector_candidates(conn, query: str, need: int) -> List[Dict[str, Any]]:
     return rows
 
 # ---------------------------
-# Hybrid retrieval with URL merge
+# Hybrid retrieval with safe URL merge
 # ---------------------------
 def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMBDA) -> List[Tuple[str, Dict[str, Any]]]:
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(f"SELECT COUNT(*) FROM {TABLE}")
-    print("[DB] Total rows in table:", cur.fetchone())
-
     try:
         need = min(max(top_k * CAND_MULT, 50), MAX_SQL_LIMIT)
         base = vector_candidates(conn, query, need)
@@ -170,10 +164,11 @@ def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMB
     q_vec = _tf_dict(query)
     selected = mmr_select_url_aware(cands, q_vec=q_vec, k=max(top_k, 5), lambda_=mmr_lambda)
 
-    # merge chunks by URL
+    # merge chunks safely by normalized URL
     merged_by_url: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"text": "", "meta": None, "score": 0.0})
     for s in selected:
-        url = s["meta"]["url"] or s["meta"]["id"]
+        raw_url = s["meta"]["url"] or s["meta"]["id"] or ""
+        url = raw_url.strip().lower().rstrip("/")
         if merged_by_url[url]["text"]:
             merged_by_url[url]["text"] += "\n" + s["text"]
             merged_by_url[url]["score"] = max(merged_by_url[url]["score"], s["score"])
@@ -182,16 +177,17 @@ def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMB
             merged_by_url[url]["meta"] = s["meta"]
             merged_by_url[url]["score"] = s["score"]
 
-    # final sorted output (keep all chunks separate)
-    final = sorted(selected, key=lambda x: x["score"], reverse=True)
+    print("[DEBUG] merged_by_url keys:", list(merged_by_url.keys()))
+
+    # final sorted output, keep all merged chunks
+    final = sorted(merged_by_url.values(), key=lambda x: x["score"], reverse=True)
     out: List[Tuple[str, Dict[str, Any]]] = [(v["text"], v["meta"]) for v in final]
 
-    print(f"[DEBUG] Final results count: {len(out)}")
+    print(f"[DEBUG] Final merged results count: {len(out)}")
     for o in out[:5]:
         print(f"   url={o[1]['url']}  score={o[1]['score']:.4f}  snippet='{o[0][:80]}'")
 
     return out
-
 
 # ---------------------------
 # Formatter
