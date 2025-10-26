@@ -1,9 +1,8 @@
 import math
 from typing import Any, Dict, List, Tuple
 import numpy as np
-from collections import Counter
 
-from src.utils import get_conn, get_env_var  # your shared utils
+from utils import get_conn, get_env_var  # shared utils
 
 try:
     import psycopg2
@@ -44,64 +43,40 @@ def get_embedding(text: str) -> List[float]:
 # Text utils
 # ---------------------------
 def _tf_dict(s: str) -> Dict[str, float]:
+    from collections import Counter
     toks = (s or "").lower().split()
     if not toks: return {}
-    c = Counter(toks)
-    tot = float(sum(c.values()))
-    return {t: v / tot for t, v in c.items()} if tot > 0 else {}
+    c = Counter(toks); tot = float(sum(c.values()))
+    return {t: v/tot for t, v in c.items()} if tot > 0 else {}
 
 def _cosine(a: Dict[str,float], b: Dict[str,float]) -> float:
     if not a or not b: return 0.0
     common = set(a) & set(b)
-    num = sum(a[t] * b[t] for t in common)
+    num = sum(a[t]*b[t] for t in common)
     na = math.sqrt(sum(v*v for v in a.values())) or 1.0
     nb = math.sqrt(sum(v*v for v in b.values())) or 1.0
-    return num / (na * nb)
+    return num/(na*nb)
 
 # ---------------------------
-# URL-aware MMR
+# MMR reranking
 # ---------------------------
-def mmr_select_url_aware(scored: List[Any], q_vec=None, k: int = 10, lambda_: float = MMR_LAMBDA) -> List[Any]:
+def mmr_select(scored: List[Any], q_vec=None, k: int=10, lambda_: float=MMR_LAMBDA) -> List[Any]:
     n = len(scored)
-    if n == 0 or k <= 0:
-        return []
-
-    k = min(k, n)
+    if n==0 or k<=0: return []
+    k = min(k,n)
     idx = list(range(n))
     idx.sort(key=lambda i: float(scored[i].get("score", 0.0)), reverse=True)
-    selected = [idx[0]]
-    avail = idx[1:]
-
+    selected = [idx[0]]; avail = idx[1:]
     vecs = [c.get("tfidf") for c in scored]
     rels = [c.get("score", 0.0) for c in scored]
-    urls = [c.get("meta", {}).get("url") for c in scored]
-
-    # Count chunks per URL for dynamic penalty
-    url_count = Counter(urls)
-
-    while avail and len(selected) < k:
+    while avail and len(selected)<k:
         best_i, best_val = None, -1e18
         for i in avail:
             rel = rels[i]
-            div = 0.0
-            if vecs[i]:
-                sims = []
-                for j in selected:
-                    sim = _cosine(vecs[i], vecs[j])
-                    # reduce penalty if same URL
-                    if urls[i] and urls[j] and urls[i] == urls[j]:
-                        # dynamic factor: more chunks → even lower penalty
-                        factor = 0.2 + 0.1 / max(url_count[urls[i]], 1)
-                        sim *= factor
-                    sims.append(sim)
-                div = max(sims) if sims else 0.0
-
-            val = lambda_ * rel - (1.0 - lambda_) * div
-            if val > best_val:
-                best_val, best_i = val, i
-        selected.append(best_i)
-        avail.remove(best_i)
-
+            div = max(_cosine(vecs[i], vecs[j]) for j in selected if vecs[j]) if vecs[i] else 0.0
+            val = lambda_*rel - (1.0-lambda_)*div
+            if val>best_val: best_val, best_i = val, i
+        selected.append(best_i); avail.remove(best_i)
     return [scored[i] for i in selected]
 
 # ---------------------------
@@ -131,11 +106,12 @@ def vector_candidates(conn, query: str, need: int) -> List[Dict[str, Any]]:
 
 def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMBDA) -> List[Tuple[str, Dict[str, Any]]]:
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(f"SELECT COUNT(*) FROM {TABLE}")
-    print("[DB] Total rows in table:", cur.fetchone())
-
     try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) FROM {TABLE}")
+        print("[DB] Total rows in table:", cur.fetchone()[0])
+
+        # Retrieve candidates from DB
         need = min(max(top_k * CAND_MULT, 50), MAX_SQL_LIMIT)
         base = vector_candidates(conn, query, need)
     except Exception as e:
@@ -153,30 +129,54 @@ def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMB
     for r in base[:5]:
         print(f"   id={r['id']}  score={r['score']:.4f}  text_snippet='{(r['document'] or '')[:80]}'")
 
+    # Prepare candidates with TF-IDF and URL grouping
+    from collections import Counter
+    url_counts = Counter((r.get("metadata") or {}).get("url") for r in base)
+
     cands: List[Dict[str, Any]] = []
     for r in base:
         text = r.get("document") or ""
-        meta_raw = r.get("metadata", {})
+        meta_raw = r.get("metadata") or {}
+        url = (meta_raw.get("url") or "").lower().rstrip("/") if meta_raw else None
+        boost = 0.05 * (url_counts[url] - 1) if url else 0.0  # small boost if multiple chunks share URL
         meta = {
             "id": str(r.get("id")) if r.get("id") else None,
-            "url": meta_raw.get("url"),
-            "score": float(r.get("score") or 0.0),
+            "source": url,
+            "score": float(r.get("score") or 0.0) + boost,
             "tfidf": _tf_dict(text),
+            "url_group": url
         }
         cands.append({"text": text, "score": meta["score"], "tfidf": meta["tfidf"], "meta": meta})
 
+    # MMR selection
     q_vec = _tf_dict(query)
-    selected = mmr_select_url_aware(cands, q_vec=q_vec, k=max(top_k, 5), lambda_=mmr_lambda)
-
+    selected = mmr_select(cands, q_vec=q_vec, k=max(top_k, 5), lambda_=mmr_lambda)
     print(f"[DEBUG] After MMR, selected {len(selected)} results")
-    for s in selected[:5]:
-        print(f"   id={s['meta']['id']}  score={s['score']:.4f}  text_snippet='{s['text'][:80]}'")
 
+    for s in selected[:5]:
+        print(f"   id={s['meta']['id']}  score={s['score']:.4f}  url_group='{s['meta']['url_group']}'  text_snippet='{s['text'][:80]}'")
+
+    # Deduplicate by URL, keeping the highest-scoring chunk per URL
+    seen_urls = set()
+    deduped: List[Dict[str, Any]] = []
+    for s in selected:
+        url = s["meta"].get("url_group")
+        if url and url in seen_urls:
+            continue
+        deduped.append(s)
+        if url:
+            seen_urls.add(url)
+
+    # Prepare final output
     out: List[Tuple[str, Dict[str, Any]]] = []
-    for s in selected[:top_k]:
+    for s in deduped[:top_k]:
         meta = dict(s["meta"])
         out.append((s["text"], meta))
+
+    print(f"[DEBUG] Returning {len(out)} final results after URL deduplication")
     return out
+
+
 
 # ---------------------------
 # Formatter
