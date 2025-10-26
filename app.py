@@ -4,21 +4,26 @@ import json
 import urllib.parse
 import streamlit as st
 import pandas as pd
+from typing import Any, List, Tuple, Union
 from generator import generate_rag_answer
 from retrieval import hybrid_retrieve_pg
 
 st.set_page_config(page_title="RAG-TDD Demo", layout="wide")
 
-
 # -----------------------
-# Media detection & embedding helpers
+# Patterns & helpers
 # -----------------------
 YOUTUBE_REGEX = r'https?://(?:www\.)?(?:youtube\.com/watch\?v=[\w-]+(?:[^\s]*)|youtu\.be/[\w-]+(?:[^\s]*))'
 URL_REGEX = r'https?://[^\s)>\]"]+'
 
-def _extract_inner_image_from_gitbook(url: str) -> str | None:
+def find_urls_in_text(text: str) -> List[str]:
+    if not text:
+        return []
+    return [m.group(0).rstrip('.,;:') for m in re.finditer(URL_REGEX, text)]
+
+def _extract_inner_image_from_gitbook(url: str) -> Union[str, None]:
     """
-    If url contains an encoded image link in query params (e.g. ?url=...), decode & return it.
+    Decode inner image URL from GitBook-style URLs: '?url=<encoded_image_url>'
     """
     try:
         parsed = urllib.parse.urlparse(url)
@@ -32,12 +37,6 @@ def _extract_inner_image_from_gitbook(url: str) -> str | None:
     return None
 
 def _looks_like_image(url: str) -> bool:
-    """
-    Heuristics to decide whether a URL points to an image:
-      - direct extension (.png/.jpg/...) possibly followed by ? or #
-      - percent-encoded .png/.jpg in the URL (e.g. %2Epng)
-      - contains 'image?' pattern (gitbook style)
-    """
     u = url.lower()
     if re.search(r'\.(png|jpe?g|gif|bmp|webp)(?:[?#]|$)', u):
         return True
@@ -49,10 +48,10 @@ def _looks_like_image(url: str) -> bool:
 
 def _embed_url(url: str):
     """
-    Try to embed the URL as a YouTube video or image. Fall back to a clickable markdown link.
+    Try to embed url (video/image). If embed fails, fallback to clickable link.
     """
-    url = url.rstrip('.,;:')  # strip trailing punctuation
-    # YouTube
+    url = url.rstrip('.,;:')  # trim trailing punctuation
+    # video
     if re.match(YOUTUBE_REGEX, url, flags=re.IGNORECASE):
         try:
             st.video(url)
@@ -61,16 +60,14 @@ def _embed_url(url: str):
             st.markdown(f"[Video link]({url})")
             return
 
-    # GitBook / encoded inner image
+    # try decoded inner URL for gitbook style
     inner = _extract_inner_image_from_gitbook(url)
     if inner:
-        # If inner appears image-like, try it first
         if _looks_like_image(inner):
             try:
                 st.image(inner, use_container_width=True)
                 return
             except Exception:
-                # fallthrough to try outer url
                 pass
         try:
             st.image(inner, use_container_width=True)
@@ -78,7 +75,7 @@ def _embed_url(url: str):
         except Exception:
             pass
 
-    # If the url itself looks like an image, try embedding
+    # try embed direct image
     if _looks_like_image(url):
         try:
             st.image(url, use_container_width=True)
@@ -87,33 +84,18 @@ def _embed_url(url: str):
             st.markdown(f"[Image link]({url})")
             return
 
-    # Final fallback: clickable link
+    # fallback link
     st.markdown(f"[Link]({url})")
-
-def has_media(text: str) -> bool:
-    """
-    Quick heuristic: returns True if text contains a YouTube link or any image-like URL.
-    """
-    if not text:
-        return False
-    if re.search(YOUTUBE_REGEX, text, flags=re.IGNORECASE):
-        return True
-    for m in re.finditer(URL_REGEX, text):
-        u = m.group(0)
-        if _looks_like_image(u) or _extract_inner_image_from_gitbook(u):
-            return True
-    return False
 
 def render_text_with_media(text: str):
     """
-    Walks the text, splits on URLs, and embeds/prints in original order.
+    Walk the text, splitting on URLs, and embed inline in original order.
     """
     if not text:
         return
     last_end = 0
     for m in re.finditer(URL_REGEX, text):
         start, end = m.span()
-        # text before URL
         if start > last_end:
             chunk = text[last_end:start].strip()
             if chunk:
@@ -121,12 +103,29 @@ def render_text_with_media(text: str):
         url = m.group(0).rstrip('.,;:')
         _embed_url(url)
         last_end = end
-    # remainder
     if last_end < len(text):
         tail = text[last_end:].strip()
         if tail:
             st.markdown(tail)
 
+# -----------------------
+# JSON helpers: extract URLs from JSON-like structures
+# -----------------------
+def extract_urls_from_json(obj: Any) -> List[str]:
+    """
+    Recursively walk JSON-like object and return any URLs found in strings.
+    """
+    urls = []
+    if isinstance(obj, dict):
+        for v in obj.values():
+            urls.extend(extract_urls_from_json(v))
+    elif isinstance(obj, list):
+        for item in obj:
+            urls.extend(extract_urls_from_json(item))
+    elif isinstance(obj, str):
+        urls.extend(find_urls_in_text(obj))
+    # ignore other types
+    return list(dict.fromkeys(urls))  # deduplicate while preserving order
 
 # -----------------------
 # UI: Header, Demo & References
@@ -156,7 +155,6 @@ with st.expander("🔗 Reference URLs"):
     for url in reference_urls:
         st.markdown(f"- [{url}]({url})")
 
-
 # -----------------------
 # RAG Query Interface
 # -----------------------
@@ -168,19 +166,31 @@ if st.button("Ask"):
     else:
         with st.spinner("Retrieving and generating answer..."):
             try:
-                answer = generate_rag_answer(query, hybrid_retrieve_pg)  # expected string
+                # 1. Call retriever once (we'll reuse docs)
+                docs_and_meta = hybrid_retrieve_pg(query, top_k=5)
+
+                # 2. Generate answer (string expected)
+                answer = generate_rag_answer(query, lambda q, top_k=5: docs_and_meta)
+
                 st.success("Answer:")
 
-                # 1) If raw answer contains media -> embed media first (preserving surrounding text)
-                if has_media(answer):
-                    render_text_with_media(answer)
+                # 3. Inspect answer (raw text) and JSON inside it for media URLs
+                raw_urls = find_urls_in_text(answer)
 
-                    # After media embedding, still try to present structured JSON (if present)
-                    try:
-                        parsed_json = json.loads(answer)
-                    except Exception:
-                        parsed_json = None
+                parsed_json = None
+                try:
+                    parsed_json = json.loads(answer)
+                except Exception:
+                    parsed_json = None
 
+                json_urls = extract_urls_from_json(parsed_json) if parsed_json is not None else []
+                combined_answer_urls = list(dict.fromkeys(raw_urls + json_urls))
+
+                # 4. If we found media in the answer's raw text or JSON -> embed them first
+                if combined_answer_urls:
+                    for u in combined_answer_urls:
+                        _embed_url(u)
+                    # After embedding, show structured JSON/table if present
                     if isinstance(parsed_json, list) and all(isinstance(i, dict) for i in parsed_json):
                         st.subheader("Structured Output (table)")
                         df = pd.json_normalize(parsed_json)
@@ -188,29 +198,78 @@ if st.button("Ask"):
                     elif isinstance(parsed_json, dict):
                         st.subheader("Structured Output (JSON)")
                         st.json(parsed_json)
-
+                    else:
+                        # Also render the (possibly non-JSON) remainder in the answer
+                        # but avoid re-printing embedded URLs: do a render that highlights media + text
+                        render_text_with_media(answer)
                 else:
-                    # 2) No media present -> try JSON/table first (table appears above plain text)
-                    try:
-                        parsed_json = json.loads(answer)
-                    except Exception:
-                        parsed_json = None
+                    # 5. No media in answer -> scan retrieved chunks for media and embed them
+                    embedded_from_chunks = False
+                    if docs_and_meta:
+                        for i, item in enumerate(docs_and_meta, start=1):
+                            # item could be (doc, meta) or dict
+                            try:
+                                doc, meta = item
+                            except Exception:
+                                if isinstance(item, dict):
+                                    doc = item.get("doc") or item.get("text") or ""
+                                    meta = item.get("meta", {})
+                                else:
+                                    doc = str(item)
+                                    meta = {}
 
+                            # collect urls from doc text and meta fields
+                            chunk_urls = []
+                            if isinstance(doc, str):
+                                chunk_urls.extend(find_urls_in_text(doc))
+                            else:
+                                # if doc is structured, try serializing then extracting
+                                try:
+                                    chunk_urls.extend(find_urls_in_text(json.dumps(doc)))
+                                except Exception:
+                                    pass
+
+                            # meta might have source url(s)
+                            try:
+                                if isinstance(meta, dict):
+                                    for v in meta.values():
+                                        if isinstance(v, str):
+                                            chunk_urls.extend(find_urls_in_text(v))
+                                        else:
+                                            try:
+                                                chunk_urls.extend(find_urls_in_text(json.dumps(v)))
+                                            except Exception:
+                                                pass
+                            except Exception:
+                                pass
+
+                            # also try extracting inner gitbook images
+                            chunk_urls = list(dict.fromkeys(chunk_urls))
+                            if chunk_urls:
+                                st.subheader(f"Embedded media from Retrieved Chunk {i}")
+                                for u in chunk_urls:
+                                    _embed_url(u)
+                                    embedded_from_chunks = True
+
+                    # 6. Show structured JSON / table / text (answer)
                     if isinstance(parsed_json, list) and all(isinstance(i, dict) for i in parsed_json):
+                        st.subheader("Structured Output (table)")
                         df = pd.json_normalize(parsed_json)
                         st.dataframe(df)
                     elif isinstance(parsed_json, dict):
+                        st.subheader("Structured Output (JSON)")
                         st.json(parsed_json)
                     else:
-                        # 3) Fallback: render text (this will still embed any unusual media patterns)
                         render_text_with_media(answer)
 
+                    if not combined_answer_urls and not embedded_from_chunks:
+                        st.info("No embeddable media found in the answer or retrieved chunks.")
+
                 # -----------------------
-                # Transparency: show retrieved chunks
+                # Finally: show retrieved chunks with expanders (transparency)
                 # -----------------------
                 st.subheader("Retrieved Chunks Used")
                 try:
-                    docs_and_meta = hybrid_retrieve_pg(query, top_k=5)
                     if not docs_and_meta:
                         st.info("No retrieved chunks returned by the retriever.")
                     else:
