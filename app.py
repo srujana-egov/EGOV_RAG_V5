@@ -11,7 +11,7 @@ st.set_page_config(page_title="RAG-TDD Demo", layout="wide")
 # Helper: detect media in text
 # -----------------------
 YOUTUBE_REGEX = r'https?://(?:www\.)?(?:youtube\.com/watch\?v=[\w-]+(?:[^\s]*)|youtu\.be/[\w-]+(?:[^\s]*))'
-IMAGE_REGEX = r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp|webp)(?:\?\S*)?'
+IMAGE_REGEX = r'https?://\S+(?:\.(?:png|jpg|jpeg|gif|bmp|webp)(?:\?\S*)?|image\?\S+|media\?\S+)'
 
 def has_media(text: str) -> bool:
     if not text:
