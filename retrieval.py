@@ -2,7 +2,7 @@ import math
 from typing import Any, Dict, List, Tuple
 from collections import Counter, defaultdict
 
-from src.utils import get_conn, get_env_var  # your shared utils
+from utils import get_conn, get_env_var  # your shared utils
 
 try:
     import psycopg2
