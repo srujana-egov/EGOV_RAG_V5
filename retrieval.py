@@ -106,11 +106,12 @@ def vector_candidates(conn, query: str, need: int) -> List[Dict[str, Any]]:
 
 def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMBDA) -> List[Tuple[str, Dict[str, Any]]]:
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM hcm_manual")
-    print("[DB] Total rows in table:", cur.fetchone())
-
     try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) FROM {TABLE}")
+        print("[DB] Total rows in table:", cur.fetchone()[0])
+
+        # Retrieve candidates from DB
         need = min(max(top_k * CAND_MULT, 50), MAX_SQL_LIMIT)
         base = vector_candidates(conn, query, need)
     except Exception as e:
@@ -128,31 +129,53 @@ def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMB
     for r in base[:5]:
         print(f"   id={r['id']}  score={r['score']:.4f}  text_snippet='{(r['document'] or '')[:80]}'")
 
-    # Prep for MMR
+    # Prepare candidates with TF-IDF and URL grouping
+    from collections import Counter
+    url_counts = Counter((r.get("metadata") or {}).get("url") for r in base)
+
     cands: List[Dict[str, Any]] = []
     for r in base:
         text = r.get("document") or ""
-        meta_raw = r.get("metadata", {})
+        meta_raw = r.get("metadata") or {}
+        url = (meta_raw.get("url") or "").lower().rstrip("/") if meta_raw else None
+        boost = 0.05 * (url_counts[url] - 1) if url else 0.0  # small boost if multiple chunks share URL
         meta = {
             "id": str(r.get("id")) if r.get("id") else None,
-            "source": meta_raw.get("url"),
-            "score": float(r.get("score") or 0.0),
+            "source": url,
+            "score": float(r.get("score") or 0.0) + boost,
             "tfidf": _tf_dict(text),
+            "url_group": url
         }
         cands.append({"text": text, "score": meta["score"], "tfidf": meta["tfidf"], "meta": meta})
 
+    # MMR selection
     q_vec = _tf_dict(query)
     selected = mmr_select(cands, q_vec=q_vec, k=max(top_k, 5), lambda_=mmr_lambda)
-
     print(f"[DEBUG] After MMR, selected {len(selected)} results")
-    for s in selected[:5]:
-        print(f"   id={s['meta']['id']}  score={s['score']:.4f}  text_snippet='{s['text'][:80]}'")
 
+    for s in selected[:5]:
+        print(f"   id={s['meta']['id']}  score={s['score']:.4f}  url_group='{s['meta']['url_group']}'  text_snippet='{s['text'][:80]}'")
+
+    # Deduplicate by URL, keeping the highest-scoring chunk per URL
+    seen_urls = set()
+    deduped: List[Dict[str, Any]] = []
+    for s in selected:
+        url = s["meta"].get("url_group")
+        if url and url in seen_urls:
+            continue
+        deduped.append(s)
+        if url:
+            seen_urls.add(url)
+
+    # Prepare final output
     out: List[Tuple[str, Dict[str, Any]]] = []
-    for s in selected[:top_k]:
+    for s in deduped[:top_k]:
         meta = dict(s["meta"])
         out.append((s["text"], meta))
+
+    print(f"[DEBUG] Returning {len(out)} final results after URL deduplication")
     return out
+
 
 
 # ---------------------------
