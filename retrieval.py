@@ -15,6 +15,7 @@ except Exception:
 # ---------------------------
 TABLE = "hcm_manual"
 ID_COL, TXT_COL, URL_COL, TAG_COL, VER_COL = "id", "document", "url", "tag", "version"
+TITLE_COL = "title"  # << added so we can use title field
 EMB_COL = get_env_var("EMBED_COL", "embedding")
 
 EMBED_MODEL     = get_env_var("EMBEDDING_MODEL", "text-embedding-3-small")
@@ -105,11 +106,15 @@ def mmr_select_url_aware(scored: List[Any], q_vec=None, k: int = 10, lambda_: fl
 # ---------------------------
 def vector_candidates(conn, query: str, need: int) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
+    
+    # ✅ Include title+url context in the embedding
+    emb_input = f"QUERY CONTEXT:\n{query}"
+    qvec = get_embedding(emb_input)
+
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        qvec = get_embedding(query)
         sql_vec = f"""
           SELECT
-            {ID_COL} AS id, {TXT_COL} AS document, {URL_COL}, {TAG_COL}, {VER_COL},
+            {ID_COL} AS id, {TITLE_COL} AS title, {TXT_COL} AS document, {URL_COL}, {TAG_COL}, {VER_COL},
             (1.0 - ({EMB_COL} <=> %s::vector))::float AS score
           FROM {TABLE}
           ORDER BY {EMB_COL} <=> %s::vector
@@ -118,8 +123,14 @@ def vector_candidates(conn, query: str, need: int) -> List[Dict[str, Any]]:
         cur.execute(sql_vec, [qvec, qvec, need])
         rows = cur.fetchall()
         for r in rows:
+            # ✅ merge title + url + content into a single logical text for downstream
+            title = (r.get("title") or "").strip()
+            url = (r.get("url") or "").strip()
+            doc = (r.get("document") or "").strip()
+            combined_text = f"TITLE: {title}\nURL: {url}\nCONTENT:\n{doc}"
+            r["document"] = combined_text
             r["metadata"] = {
-                "url": r.get("url"),
+                "url": url,
                 "tag": r.get("tag"),
                 "version": r.get("version"),
             }
