@@ -7,7 +7,7 @@ import json
 def chat_with_assistant(query, docs, model="gpt-4"):
     """
     Calls OpenAI chat completion model with query and supporting docs.
-    Returns a structured JSON array as Python list.
+    Returns a structured JSON answer as a string.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -15,69 +15,73 @@ def chat_with_assistant(query, docs, model="gpt-4"):
     
     client = openai.OpenAI(api_key=api_key)
 
-    # Combine docs into a single context string
+    # Preserve chunk titles/IDs to help model understand context
     context = "\n\n".join([
-        f"--- {doc.get('title', 'No Title')} ---\n{doc['content']}" if isinstance(doc, dict) else doc
+        f"--- {doc.get('title','No Title')} ---\n{doc['content']}" if isinstance(doc, dict) else doc 
         for doc in docs
     ])
 
-    # Strong prompt for structured JSON output
     prompt = f"""
 You are a precise assistant that answers questions using only the provided context.
 
 Instructions:
-1. Use only information in the context.
-2. If asked for a **JSON array**, return a **complete JSON array** with **one object per field**, using exactly this schema:
-
-{{
-    "Field Name": "",
-    "Description": "",
-    "Mandatory": true/false,
-    "Input": "User" or "System",
-    "Data Type": "",
-    "Min Length": int or null,
-    "Max Length": int or null,
-    "Minimum Value": number or null,
-    "Maximum Value": number or null,
-    "Need Data from Program or State": true/false
-}}
-
-3. If information is missing, use `null` for string, number, or boolean fields.
-4. Merge complementary information from multiple chunks if needed.
-5. Add a separate field at the end for URLs used: `"Reference URLs": []`
-6. Return only **valid JSON**, no extra text, no markdown, no comments.
+1. Use only information available in the context.
+2. Campaign Setup is different from Campaign Type Setup.
+3. Merge complementary information from multiple chunks if needed.
+4. Include URLs at the end as a separate JSON field: "Reference URLs": []
+5. If information is missing, indicate it clearly using null or an appropriate placeholder.
+6. HCM stands for Health Campaign Management.
+7. **Important:** 
+   - When returning JSON, do NOT include any text outside the JSON array.
+   - All boolean values must be lowercase (`true`/`false`), missing values must be `null`, and all strings must use double quotes.
+8. If the question does **not** require JSON, answer in **plain text** based on the context.
 
 Context:
 {context}
 
-Question:
-{query}
+Question: {query}
+
+Answer accordingly. If possible, format the answer as a JSON array, otherwise return plain text.
 """
 
     response = client.chat.completions.create(
         model=model,
-        messages=[
-            {"role": "system", "content": "You are a helpful, precise assistant."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0
+        messages=[{"role": "user", "content": prompt}],
+        max_completion_tokens=4000,
+        temperature=0.2
     )
 
-    answer_text = response.choices[0].message.content
+    return response.choices[0].message.content.strip()
 
+
+def generate_rag_answer(query, hybrid_retrieve_pg, top_k=5, model="gpt-4"):
+    docs_and_meta = hybrid_retrieve_pg(query, top_k)
+    if not docs_and_meta:
+        return "I don't have enough information in the knowledge base to answer that. Please check our documentation for more details: https://docs.digit.org/health."
+
+    print("\n[Retrieved Chunks Used:]\n")
+    docs = []
+    for i, (doc, meta) in enumerate(docs_and_meta, start=1):
+        print(f"--- Chunk {i} ---")
+        print(f"ID: {meta.get('id')}")
+        print(f"Score: {meta.get('score')}")
+        print(f"Snippet: {(doc or '').strip()[:300]}...\n")
+        docs.append({"title": meta.get('title', f"Chunk {i}"), "content": doc})
+
+    answer = chat_with_assistant(query, docs, model=model)
+
+    # Try to parse as JSON and pretty-print
     try:
-        # Convert JSON string to Python list/dict
-        answer_json = json.loads(answer_text)
-        return answer_json
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Failed to parse JSON response: {e}\nResponse was:\n{answer_text}")
+        parsed = json.loads(answer)
+        # Always return pretty JSON if possible
+        return json.dumps(parsed, indent=2, ensure_ascii=False)
+    except json.JSONDecodeError:
+        # If not JSON, return as-is (plain text)
+        return answer
 
 
 if __name__ == "__main__":
-    # Example usage
-    docs = [
-        {"title": "Campaign Setup Spec", "content": "Your context text goes here..."}
-    ]
-    query = "Generate a JSON array of all fields for Campaign Setup."
-    result = chat_with_assistant(query, docs)
-    print(json.dumps(result, indent=2))
+    from .retrieval import hybrid_retrieve_pg
+    q = input("Enter user query: ")
+    answer = generate_rag_answer(q, hybrid_retrieve_pg, model="gpt-4")
+    print("\nRAG Answer:\n", answer)
