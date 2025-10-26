@@ -4,12 +4,34 @@ import json
 import urllib.parse
 import streamlit as st
 import pandas as pd
+import requests
 from typing import Any, List, Union
 from generator import generate_rag_answer
 from retrieval import hybrid_retrieve_pg
 
 st.set_page_config(page_title="RAG-TDD Demo", layout="wide")
 
+# -----------------------
+# HTTP fetcher for images (server-side)
+# -----------------------
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/120.0.0.0 Safari/537.36"
+}
+
+@st.cache_data(show_spinner=False)
+def fetch_image_bytes(url: str, timeout: int = 10) -> Union[bytes, None]:
+    """
+    Try to fetch image bytes server-side and return bytes. Return None on failure.
+    Cached to avoid repeated downloads.
+    """
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=timeout, stream=True)
+        resp.raise_for_status()
+        return resp.content
+    except Exception:
+        return None
 
 # -----------------------
 # Patterns & helpers
@@ -47,10 +69,16 @@ def _looks_like_image(url: str) -> bool:
         return True
     return False
 
-def _embed_gitbook_proxy_if_present(url: str) -> bool:
+def _show_link_and_button(url: str, label: str = "Open image"):
+    st.markdown(f"[Link]({url})")
+    # streamlit doesn't have a native open-in-new-tab button, but we can render HTML anchor that opens in new tab
+    btn_html = f"""<a target="_blank" href="{url}"><button style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;background:#f6f6f6">🔗 {label}</button></a>"""
+    st.markdown(btn_html, unsafe_allow_html=True)
+
+def _embed_gitbook_proxy_if_present_and_fetch(url: str) -> bool:
     """
-    If url is a GitBook proxy like /~gitbook/image?url=..., decode inner URL and try to embed.
-    Returns True if it handled (embedded or fell back to link); False otherwise.
+    If url is a GitBook proxy like /~gitbook/image?url=..., decode inner URL and try to fetch & embed.
+    Returns True if handled (embedded or fallback link shown); False otherwise.
     """
     lowered = url.lower()
     if '/~gitbook/image' in lowered or 'gitbook/image?' in lowered or 'docs.digit.org/~gitbook/image' in lowered:
@@ -60,34 +88,42 @@ def _embed_gitbook_proxy_if_present(url: str) -> bool:
             inner_encoded = q.get("url", [""])[0]
             if inner_encoded:
                 inner_decoded = urllib.parse.unquote(inner_encoded)
-                # Try embed inner decoded URL as image
-                try:
-                    st.image(inner_decoded, caption="Diagram", use_container_width=True)
+                # try server-side fetch
+                img_bytes = fetch_image_bytes(inner_decoded)
+                if img_bytes:
+                    st.image(img_bytes, caption="Diagram", use_container_width=True)
                     return True
-                except Exception:
-                    # fallback: show clickable link to inner decoded URL
-                    st.markdown(f"[Diagram]({inner_decoded})")
+                else:
+                    # attempt fallback: try outer proxy URL server-side too (rarely works)
+                    outer_bytes = fetch_image_bytes(url)
+                    if outer_bytes:
+                        st.image(outer_bytes, caption="Diagram (via proxy)", use_container_width=True)
+                        return True
+                    # fallback to link + open-in-new-tab button
+                    st.markdown("**Diagram (could not embed — opened as link)**")
+                    _show_link_and_button(inner_decoded, "Open decoded image in new tab")
                     return True
         except Exception:
-            # If anything goes wrong, fall through to let outer URL be handled by normal logic
+            # if something goes wrong, return False to allow normal handler
             return False
     return False
 
 def _embed_url(url: str):
     """
-    Try to embed the URL as a YouTube video or image. If embed fails, fallback to a clickable markdown link.
+    Try to embed the URL as a YouTube video or image. Uses server-side fetch for images to avoid hotlink issues.
+    Fallbacks to link + button.
     """
     url = url.rstrip('.,;:')  # strip trailing punctuation
 
     # 1) GitBook proxy explicit handler (highest priority)
     try:
-        handled = _embed_gitbook_proxy_if_present(url)
+        handled = _embed_gitbook_proxy_if_present_and_fetch(url)
         if handled:
             return
     except Exception:
         pass
 
-    # 2) YouTube
+    # 2) YouTube (embed client-side)
     if re.match(YOUTUBE_REGEX, url, flags=re.IGNORECASE):
         try:
             st.video(url)
@@ -100,24 +136,35 @@ def _embed_url(url: str):
     inner = _extract_inner_image_from_gitbook(url)
     if inner:
         if _looks_like_image(inner):
-            try:
-                st.image(inner, use_container_width=True)
+            bytes_inner = fetch_image_bytes(inner)
+            if bytes_inner:
+                st.image(bytes_inner, use_container_width=True)
                 return
-            except Exception:
-                pass
-        try:
-            st.image(inner, use_container_width=True)
-            return
-        except Exception:
-            pass
+            else:
+                # try outer
+                outer_bytes = fetch_image_bytes(url)
+                if outer_bytes:
+                    st.image(outer_bytes, use_container_width=True)
+                    return
+                st.markdown("**Image (could not embed) — opened as link**")
+                _show_link_and_button(inner, "Open decoded image in new tab")
+                return
+        else:
+            # if inner isn't image-like, still try fetching inner bytes (maybe direct)
+            bytes_inner = fetch_image_bytes(inner)
+            if bytes_inner:
+                st.image(bytes_inner, use_container_width=True)
+                return
 
-    # 4) If the url itself looks like an image, try embedding
+    # 4) If the url itself looks like an image, try fetching server-side first
     if _looks_like_image(url):
-        try:
-            st.image(url, use_container_width=True)
+        img_bytes = fetch_image_bytes(url)
+        if img_bytes:
+            st.image(img_bytes, use_container_width=True)
             return
-        except Exception:
-            st.markdown(f"[Image link]({url})")
+        else:
+            st.markdown("**Image (could not embed) — opened as link**")
+            _show_link_and_button(url, "Open image in new tab")
             return
 
     # 5) Final fallback: clickable link
@@ -189,6 +236,26 @@ st.subheader(
     "Important note: Work under progress, only answers questions until ACCESS subsection of HCM gitbook. "
     "Updated information on console and dashboard to be added."
 )
+
+demo_videos = [
+    {"Title": "Health Campaign Management Demo Video", "URL": "https://www.youtube.com/watch?v=_yxD9Wjqkfw&t=3s"},
+    {"Title": "Features & Workflows Walkthrough Video of HCM", "URL": "https://www.youtube.com/watch?v=NB54Ve_smv0"}
+]
+
+with st.expander("🎥 Demo Videos"):
+    for v in demo_videos:
+        st.markdown(f"**{v['Title']}**")
+        st.video(v["URL"])
+        st.divider()
+
+reference_urls = [
+    "https://docs.digit.org/health/introducing-public-health/whats-new",
+    "https://docs.digit.org/health/access/public-health-product-suite/health-campaign-management-hcm/demo"
+]
+with st.expander("🔗 Reference URLs"):
+    for url in reference_urls:
+        st.markdown(f"- [{url}]({url})")
+
 
 # -----------------------
 # RAG Query Interface
