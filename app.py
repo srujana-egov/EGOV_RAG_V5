@@ -1,4 +1,6 @@
 import streamlit as st
+import json
+import pandas as pd
 from generator import generate_rag_answer
 from retrieval import hybrid_retrieve_pg
 
@@ -21,32 +23,33 @@ if st.button("Ask"):
     else:
         with st.spinner("Retrieving and generating answer..."):
             try:
-                # Generate RAG answer
+                # Generate answer
                 answer = generate_rag_answer(query, hybrid_retrieve_pg)
+                
                 st.success("Answer:")
-                st.markdown(answer)  # use markdown for better formatting
+
+                # Try to parse as JSON for nice formatting
+                try:
+                    parsed_json = json.loads(answer)
+
+                    # If it's a list of dicts, show as table
+                    if isinstance(parsed_json, list) and all(isinstance(i, dict) for i in parsed_json):
+                        df = pd.json_normalize(parsed_json)
+                        st.dataframe(df)
+                    else:
+                        st.json(parsed_json)  # Pretty JSON viewer
+                except json.JSONDecodeError:
+                    # Not JSON? Show as plain text
+                    st.write(answer)
 
                 # Transparency: show retrieved chunks
                 st.subheader("Retrieved Chunks Used")
                 docs_and_meta = hybrid_retrieve_pg(query, top_k=5)
+                for i, (doc, meta) in enumerate(docs_and_meta, start=1):
+                    with st.expander(f"Chunk {i} (Score: {meta.get('score'):.4f})"):
+                        st.write(doc)
+                        if meta.get("source"):
+                            st.markdown(f"[Source]({meta['source']})")
 
-                for i, item in enumerate(docs_and_meta, start=1):
-                    # Unpack safely
-                    if isinstance(item, tuple) and len(item) == 2:
-                        doc, meta = item
-                    else:
-                        doc, meta = item, {}
-
-                    score = meta.get("score", None)
-                    source = meta.get("source", None)
-
-                    expander_label = f"Chunk {i}"
-                    if score is not None:
-                        expander_label += f" (Score: {score:.4f})"
-
-                    with st.expander(expander_label):
-                        st.markdown(doc)
-                        if source:
-                            st.markdown(f"[Source]({source})")
             except Exception as e:
                 st.error(f"Error: {str(e)}")
