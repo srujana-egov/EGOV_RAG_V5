@@ -8,6 +8,17 @@ from retrieval import hybrid_retrieve_pg
 st.set_page_config(page_title="RAG-TDD Demo", layout="wide")
 
 # -----------------------
+# Helper: detect media in text
+# -----------------------
+YOUTUBE_REGEX = r'https?://(?:www\.)?(?:youtube\.com/watch\?v=[\w-]+(?:[^\s]*)|youtu\.be/[\w-]+(?:[^\s]*))'
+IMAGE_REGEX = r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp|webp)(?:\?\S*)?'
+
+def has_media(text: str) -> bool:
+    if not text:
+        return False
+    return bool(re.search(YOUTUBE_REGEX, text, flags=re.IGNORECASE) or re.search(IMAGE_REGEX, text, flags=re.IGNORECASE))
+
+# -----------------------
 # Helper: render text with media embedding
 # -----------------------
 def render_text_with_media(text: str):
@@ -15,37 +26,30 @@ def render_text_with_media(text: str):
     Render text in Streamlit and automatically embed:
       - YouTube links (youtube.com/watch?v=... or youtu.be/...)
       - Image links ending with png/jpg/jpeg/gif/bmp/webp (with optional query params)
-    Other URLs are left as markdown links.
+    Keeps original text order and renders non-media as markdown.
     """
     if not text:
         return
 
-    # Patterns
-    youtube_pattern = r'https?://(?:www\.)?(?:youtube\.com/watch\?v=[\w-]+(?:[^\s]*)|youtu\.be/[\w-]+(?:[^\s]*))'
-    image_pattern = r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp|webp)(?:\?\S*)?'
-
-    # Combined pattern to find either youtube or image (keeps order)
-    combined_pattern = f'({youtube_pattern})|({image_pattern})'
-
+    combined_pattern = f'({YOUTUBE_REGEX})|({IMAGE_REGEX})'
     last_end = 0
     for match in re.finditer(combined_pattern, text, flags=re.IGNORECASE):
         start, end = match.span()
-        # write text before the match (if any)
+        # text before match
         if start > last_end:
             chunk = text[last_end:start].strip()
             if chunk:
                 st.markdown(chunk)
 
         url = match.group(0).strip()
-
-        # Determine type and embed
-        if re.match(youtube_pattern, url, flags=re.IGNORECASE):
+        # embed video
+        if re.match(YOUTUBE_REGEX, url, flags=re.IGNORECASE):
             try:
                 st.video(url)
             except Exception:
-                # fallback to link if embed fails
                 st.markdown(f"[Video link]({url})")
-        elif re.match(image_pattern, url, flags=re.IGNORECASE):
+        # embed image
+        elif re.match(IMAGE_REGEX, url, flags=re.IGNORECASE):
             try:
                 st.image(url, use_container_width=True)
             except Exception:
@@ -55,12 +59,11 @@ def render_text_with_media(text: str):
 
         last_end = end
 
-    # remaining text after last match
+    # remainder
     if last_end < len(text):
         remainder = text[last_end:].strip()
         if remainder:
             st.markdown(remainder)
-
 
 # -----------------------
 # UI: Header & optional demo/reference sections
@@ -82,31 +85,42 @@ if st.button("Ask"):
     else:
         with st.spinner("Retrieving and generating answer..."):
             try:
-                # generate RAG answer (string expected)
-                answer = generate_rag_answer(query, hybrid_retrieve_pg)
-
+                answer = generate_rag_answer(query, hybrid_retrieve_pg)  # expected: string
                 st.success("Answer:")
 
-                # Try to parse as JSON for nicer formatting, but always embed media found in raw 'answer'
-                parsed_json = None
-                try:
-                    parsed_json = json.loads(answer)
-                except Exception:
-                    parsed_json = None
+                # 1) If media present in raw answer -> embed media first (and surrounding text)
+                if has_media(answer):
+                    render_text_with_media(answer)
+                    # AFTER embedding media, also try to show structured JSON if present
+                    try:
+                        parsed_json = json.loads(answer)
+                    except Exception:
+                        parsed_json = None
 
-                # If parsed JSON is a list of dicts -> show dataframe and also embed any detected media from raw text
-                if isinstance(parsed_json, list) and all(isinstance(i, dict) for i in parsed_json):
-                    df = pd.json_normalize(parsed_json)
-                    st.dataframe(df)
-                    # Also scan raw answer string for media links and embed
-                    render_text_with_media(answer)
-                # If it's a dict -> show json viewer and embed media if any in the raw string
-                elif isinstance(parsed_json, dict):
-                    st.json(parsed_json)
-                    render_text_with_media(answer)
-                # Not JSON -> directly render text with media embedding
+                    if isinstance(parsed_json, list) and all(isinstance(i, dict) for i in parsed_json):
+                        df = pd.json_normalize(parsed_json)
+                        st.subheader("Structured Output (table)")
+                        st.dataframe(df)
+                    elif isinstance(parsed_json, dict):
+                        st.subheader("Structured Output (JSON)")
+                        st.json(parsed_json)
+
                 else:
-                    render_text_with_media(answer)
+                    # 2) No media found -> try JSON/table first (so table appears above plain text)
+                    parsed_json = None
+                    try:
+                        parsed_json = json.loads(answer)
+                    except Exception:
+                        parsed_json = None
+
+                    if isinstance(parsed_json, list) and all(isinstance(i, dict) for i in parsed_json):
+                        df = pd.json_normalize(parsed_json)
+                        st.dataframe(df)
+                    elif isinstance(parsed_json, dict):
+                        st.json(parsed_json)
+                    else:
+                        # 3) Fall back to plain text (with any media embeddings inside — though none expected)
+                        render_text_with_media(answer)
 
                 # -----------------------
                 # Transparency: show retrieved chunks
@@ -118,11 +132,9 @@ if st.button("Ask"):
                         st.info("No retrieved chunks returned by the retriever.")
                     else:
                         for i, item in enumerate(docs_and_meta, start=1):
-                            # Support two common return shapes: (doc, meta) or dicts/tuples
                             try:
                                 doc, meta = item
                             except Exception:
-                                # try fallback if item itself is dict
                                 if isinstance(item, dict):
                                     doc = item.get("doc") or item.get("text") or str(item)
                                     meta = item.get("meta", {})
@@ -139,13 +151,11 @@ if st.button("Ask"):
                                 score_str = ""
 
                             with st.expander(f"Chunk {i}{score_str}"):
-                                # show document text
                                 if isinstance(doc, (dict, list)):
                                     st.write(doc)
                                 else:
                                     st.write(doc)
 
-                                # show source link if present
                                 source = None
                                 try:
                                     source = meta.get("source") or meta.get("url") or meta.get("source_url")
