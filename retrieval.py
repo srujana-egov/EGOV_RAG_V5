@@ -128,47 +128,67 @@ def vector_candidates(conn, query: str, need: int) -> List[Dict[str, Any]]:
 # ---------------------------
 # Hybrid retrieval with safe URL merge
 # ---------------------------
-def hybrid_retrieve_pg(query: str, top_k: int = 5, mmr_lambda: float = 0.5) -> List[Tuple[str, Dict[str, Any]]]:
-    """
-    Retrieve relevant chunks for a query, merge by URL, and rank by score.
-    
-    Returns a list of (text, meta) tuples.
-    """
-    # Step 1: Retrieve top candidate chunks
-    # Replace `vectorstore.similarity_search_with_score` with your retrieval call
-    retrieved_chunks: List[Dict[str, Any]] = vectorstore.similarity_search_with_score(query, k=top_k*2)
-    
-    # Step 2: Merge chunks by URL
-    merged_by_url: Dict[str, Dict[str, Any]] = {}
-    
-    for chunk, score in retrieved_chunks:
-        url = chunk["metadata"]["url"]
-        if url in merged_by_url:
-            # Append text and update score to max
-            merged_by_url[url]["text"] += "\n\n" + chunk["text"]
-            merged_by_url[url]["score"] = max(merged_by_url[url]["score"], score)
+def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMBDA) -> List[Tuple[str, Dict[str, Any]]]:
+    conn = get_conn()
+    try:
+        need = min(max(top_k * CAND_MULT, 50), MAX_SQL_LIMIT)
+        base = vector_candidates(conn, query, need)
+    except Exception as e:
+        print("[ERROR] vector_candidates failed:", e)
+        base = []
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    if not base:
+        print("[DEBUG] No candidates found for query:", query)
+        return []
+
+    print(f"[DEBUG] Retrieved {len(base)} candidates for query: '{query}'")
+    for r in base[:5]:
+        print(f"   id={r['id']}  score={r['score']:.4f}  text_snippet='{(r['document'] or '')[:80]}'")
+
+    # prepare candidates
+    cands: List[Dict[str, Any]] = []
+    for r in base:
+        text = r.get("document") or ""
+        meta_raw = r.get("metadata", {})
+        meta = {
+            "id": str(r.get("id")) if r.get("id") else None,
+            "url": meta_raw.get("url"),
+            "score": float(r.get("score") or 0.0),
+            "tfidf": _tf_dict(text),
+        }
+        cands.append({"text": text, "score": meta["score"], "tfidf": meta["tfidf"], "meta": meta})
+
+    q_vec = _tf_dict(query)
+    selected = mmr_select_url_aware(cands, q_vec=q_vec, k=max(top_k, 5), lambda_=mmr_lambda)
+
+    # merge chunks safely by normalized URL
+    merged_by_url: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"text": "", "meta": None, "score": 0.0})
+    for s in selected:
+        raw_url = s["meta"]["url"] or s["meta"]["id"] or ""
+        url = raw_url.strip().lower().rstrip("/")
+        if merged_by_url[url]["text"]:
+            merged_by_url[url]["text"] += "\n" + s["text"]
+            merged_by_url[url]["score"] = max(merged_by_url[url]["score"], s["score"])
         else:
-            merged_by_url[url] = {
-                "text": chunk["text"],
-                "meta": {**chunk["metadata"], "score": score},
-                "score": score
-            }
+            merged_by_url[url]["text"] = s["text"]
+            merged_by_url[url]["meta"] = s["meta"]
+            merged_by_url[url]["score"] = s["score"]
 
-    # Step 3: Apply MMR on merged documents (optional)
-    # Here you can integrate your MMR ranking function if desired
-    # For simplicity, we sort by score descending
+    print("[DEBUG] merged_by_url keys:", list(merged_by_url.keys()))
+
+    # final sorted output, keep all merged chunks
     final = sorted(merged_by_url.values(), key=lambda x: x["score"], reverse=True)
-
-    # Step 4: Format output
     out: List[Tuple[str, Dict[str, Any]]] = [(v["text"], v["meta"]) for v in final]
 
-    # Debug info
     print(f"[DEBUG] Final merged results count: {len(out)}")
     for o in out[:5]:
         print(f"   url={o[1]['url']}  score={o[1]['score']:.4f}  snippet='{o[0][:80]}'")
 
     return out
-    
+
 # ---------------------------
 # Formatter
 # ---------------------------
