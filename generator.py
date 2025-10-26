@@ -53,7 +53,6 @@ Answer accordingly. If possible, format the answer as a JSON array, otherwise re
 
     return response.choices[0].message.content.strip()
 
-
 def generate_rag_answer(query, hybrid_retrieve_pg, top_k=5, model="gpt-4"):
     docs_and_meta = hybrid_retrieve_pg(query, top_k)
     if not docs_and_meta:
@@ -78,7 +77,6 @@ def generate_rag_answer(query, hybrid_retrieve_pg, top_k=5, model="gpt-4"):
     except json.JSONDecodeError:
         # If not JSON, return as-is (plain text)
         return answer
-
 
 if __name__ == "__main__":
     from .retrieval import hybrid_retrieve_pg
