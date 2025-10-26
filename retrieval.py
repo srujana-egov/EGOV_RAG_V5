@@ -128,6 +128,9 @@ def vector_candidates(conn, query: str, need: int) -> List[Dict[str, Any]]:
 # ---------------------------
 # Hybrid retrieval with safe URL merge
 # ---------------------------
+# ---------------------------
+# Hybrid retrieval with safe URL merge + keyword boost
+# ---------------------------
 def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMBDA) -> List[Tuple[str, Dict[str, Any]]]:
     conn = get_conn()
     try:
@@ -148,7 +151,20 @@ def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMB
     for r in base[:5]:
         print(f"   id={r['id']}  score={r['score']:.4f}  text_snippet='{(r['document'] or '')[:80]}'")
 
-    # prepare candidates
+    # ---------------------------
+    # Helper: exact keyword boost
+    # ---------------------------
+    def _keyword_boost(text: str, query: str) -> float:
+        text_lower = (text or "").lower()
+        query_lower = query.lower()
+        boost = 0.0
+        if query_lower in text_lower:
+            boost += 0.2  # tweak this weight as needed
+        return boost
+
+    # ---------------------------
+    # Prepare candidates
+    # ---------------------------
     cands: List[Dict[str, Any]] = []
     for r in base:
         text = r.get("document") or ""
@@ -159,17 +175,27 @@ def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMB
             "score": float(r.get("score") or 0.0),
             "tfidf": _tf_dict(text),
         }
+
+        # Apply keyword boost
+        boost = _keyword_boost(text, query)
+        meta["score"] += boost
+
         cands.append({"text": text, "score": meta["score"], "tfidf": meta["tfidf"], "meta": meta})
 
+    # ---------------------------
+    # MMR selection
+    # ---------------------------
     q_vec = _tf_dict(query)
     selected = mmr_select_url_aware(cands, q_vec=q_vec, k=max(top_k, 5), lambda_=mmr_lambda)
 
-    # merge chunks safely by normalized URL
+    # ---------------------------
+    # Merge chunks safely by normalized URL
+    # ---------------------------
     merged_by_url: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"text": "", "meta": None, "score": 0.0})
     for s in selected:
         raw_url = s["meta"]["url"] or s["meta"]["id"] or ""
         url = raw_url.strip().lower().rstrip("/")
-        print(f"[DEBUG] Merging chunk id={s['meta']['id']} url={url} score={s['score']:.4f}")  # << ADDED DEBUG
+        print(f"[DEBUG] Merging chunk id={s['meta']['id']} url={url} score={s['score']:.4f}")
         if merged_by_url[url]["text"]:
             merged_by_url[url]["text"] += "\n" + s["text"]
             merged_by_url[url]["score"] = max(merged_by_url[url]["score"], s["score"])
@@ -180,7 +206,9 @@ def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMB
 
     print("[DEBUG] merged_by_url keys:", list(merged_by_url.keys()))
 
-    # final sorted output, keep all merged chunks
+    # ---------------------------
+    # Final sorted output
+    # ---------------------------
     final = sorted(merged_by_url.values(), key=lambda x: x["score"], reverse=True)
     out: List[Tuple[str, Dict[str, Any]]] = [(v["text"], v["meta"]) for v in final]
 
