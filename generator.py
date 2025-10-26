@@ -20,12 +20,13 @@ def chat_with_assistant(query, docs, model="gpt-4"):
 
     # Explicit prompt to get structured JSON output
     prompt = f"""
-You are a precise assistant that answers questions strictly using the provided context.
+You are a precise assistant that answers questions using only the provided context.
 
-Rules:
-1. Use ONLY the information from the context. Do not invent any details.
-2. Return a **complete JSON array**, where each element corresponds to a field in the Campaign Setup.
-3. Each JSON object must include:
+Instructions:
+1. Use only information available in the context.
+2. Campaign Setup is different from Campaign Type Setup.
+3. Return a **complete JSON array** with one object per field.
+4. Each object must include:
    {{
      "Field Name": "",
      "Description": "",
@@ -38,16 +39,17 @@ Rules:
      "Maximum Value": number or null,
      "Need Data from Program or State": true/false
    }}
-4. Merge complementary information from multiple chunks.
-5. Include URLs at the end as a separate JSON field: "Reference URLs": []
-6. If a field is partially described, include what is available and indicate missing info clearly.
+5. Merge complementary information from multiple chunks if needed.
+6. Include URLs at the end as a separate JSON field: "Reference URLs": []
+7. If information is missing, indicate it clearly.
+8. HCM stands for Health Campaign Management.
 
 Context:
 {context}
 
 Question: {query}
 
-Answer with the full JSON array:
+Answer with the JSON array:
 """
 
     response = client.chat.completions.create(
