@@ -169,6 +169,7 @@ def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMB
     for s in selected:
         raw_url = s["meta"]["url"] or s["meta"]["id"] or ""
         url = raw_url.strip().lower().rstrip("/")
+        print(f"[DEBUG] Merging chunk id={s['meta']['id']} url={url} score={s['score']:.4f}")  # << ADDED DEBUG
         if merged_by_url[url]["text"]:
             merged_by_url[url]["text"] += "\n" + s["text"]
             merged_by_url[url]["score"] = max(merged_by_url[url]["score"], s["score"])
