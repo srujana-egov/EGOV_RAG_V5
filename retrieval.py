@@ -183,7 +183,7 @@ def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMB
             merged_by_url[url]["score"] = s["score"]
 
     # final sorted output
-    final = sorted(merged_by_url.values(), key=lambda x: x["score"], reverse=True)[:top_k]
+    final = sorted(merged_by_url.values(), key=lambda x: x["score"], reverse=True)
     out: List[Tuple[str, Dict[str, Any]]] = [(v["text"], v["meta"]) for v in final]
 
     print(f"[DEBUG] Final merged results count: {len(out)}")
