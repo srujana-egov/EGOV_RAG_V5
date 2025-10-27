@@ -10,7 +10,6 @@ from generator import generate_rag_answer
 from retrieval import hybrid_retrieve_pg
 
 st.set_page_config(page_title="RAG-TDD Demo", layout="wide")
-st.set_page_config(page_title="RAG-TDD — Friendly View", layout="wide")
 
 # -----------------------
 # HTTP fetcher for images (server-side)
@@ -36,7 +35,6 @@ def fetch_image_bytes(url: str, timeout: int = 10) -> Union[bytes, None]:
 
 # -----------------------
 # Patterns & helpers
-# Media detection & embedding helpers
 # -----------------------
 YOUTUBE_REGEX = r'https?://(?:www\.)?(?:youtube\.com/watch\?v=[\w-]+(?:[^\s]*)|youtu\.be/[\w-]+(?:[^\s]*))'
 URL_REGEX = r'https?://[^\s)>\]"]+'
@@ -212,7 +210,6 @@ def render_text_with_media(text: str):
 
 # -----------------------
 # JSON helpers: extract URLs from JSON-like structures
-# JSON helpers: extract URLs and texts from JSON-like structures
 # -----------------------
 def extract_urls_from_json(obj: Any) -> List[str]:
     """
@@ -229,220 +226,39 @@ def extract_urls_from_json(obj: Any) -> List[str]:
         urls.extend(find_urls_in_text(obj))
     # deduplicate while preserving order
     return list(dict.fromkeys(urls))
-    return list(dict.fromkeys(urls))  # deduplicate while preserving order
 
-# -----------------------
-# Human summary extractor (display-only; does NOT modify original content)
-# -----------------------
-URL_REGEX_SIMPLE = r'https?://[^\s)>\]"]+'
-def _is_url(s: str) -> bool:
-    return bool(re.search(URL_REGEX_SIMPLE, s))
-
-def _gather_texts_from_json(obj: Any) -> List[str]:
-    texts = []
-    if isinstance(obj, dict):
-        # preferred keys
-        for key in ("summary", "description", "overview", "title", "content"):
-            if key in obj and isinstance(obj[key], str) and len(obj[key].strip()) > 30 and not _is_url(obj[key]):
-                texts.append(obj[key].strip())
-        for v in obj.values():
-            texts.extend(_gather_texts_from_json(v))
-    elif isinstance(obj, list):
-        for item in obj:
-            texts.extend(_gather_texts_from_json(item))
-    elif isinstance(obj, str):
-        s = obj.strip()
-        if len(s) >= 40 and not _is_url(s):
-            texts.append(s)
-    return texts
-
-def extract_human_summary(answer: str) -> str:
-    """
-    Robustly extract a single human-readable paragraph from a model answer that may contain JSON.
-    This function only returns a display string and does not modify the original answer content.
-    """
-    if not answer:
-        return ""
-
-    ans = answer.replace('\r\n', '\n').replace('\r', '\n')
-
-    # Try parse JSON directly
-    parsed_json = None
-    try:
-        parsed_json = json.loads(ans)
-    except Exception:
-        # attempt to find JSON substring
-        m = re.search(r'(\{|\[)', ans)
-        if m:
-            pos = m.start()
-            candidate = ans[pos:]
-            for end in range(len(candidate), 0, -1):
-                try:
-                    parsed_json = json.loads(candidate[:end])
-                    break
-                except Exception:
-                    continue
-
-    if parsed_json is not None:
-        # prefer explicit keys
-        if isinstance(parsed_json, dict):
-            for k in ("summary", "description", "overview", "title"):
-                v = parsed_json.get(k)
-                if isinstance(v, str) and len(v.strip()) >= 30 and not _is_url(v):
-                    return v.strip()
-        candidates = _gather_texts_from_json(parsed_json)
-        if candidates:
-            return max(candidates, key=len).strip()
-
-    # Fallback: cut before markers or JSON and take first paragraph
-    markers = ['Reference URLs', 'Reference URLs:', 'Source', 'Source:', 'Link', 'Links', 'Reference:', 'Retrieved Chunks']
-    cut_positions = []
-    for m in markers:
-        p = ans.find(m)
-        if p != -1:
-            cut_positions.append(p)
-    b = ans.find('{')
-    if b != -1:
-        cut_positions.append(b)
-    b2 = ans.find('[')
-    if b2 != -1:
-        cut_positions.append(b2)
-    if cut_positions:
-        cut_at = min(cut_positions)
-        leading_text = ans[:cut_at].strip()
-    else:
-        leading_text = ans.strip()
-
-    paragraphs = [p.strip() for p in re.split(r'\n\s*\n', leading_text) if p.strip()]
-    for p in paragraphs:
-        if len(p) >= 50 and p.lower() not in ('link', 'link:', 'source'):
-            return p
-    if paragraphs:
-        return paragraphs[0]
-
-    sents = re.split(r'(?<=[.!?])\s+', ans.strip())
-    if sents:
-        return ' '.join(sents[:2]).strip()
-
-    return ans.strip()
-
-# -----------------------
-# Friendly JSON renderer (appearance only)
-# -----------------------
-def render_structured_json_friendly(parsed_json: Any):
-    """
-    Present the parsed JSON in a friendly, non-technical UI without mutating content.
-    """
-    if parsed_json is None:
-        return
-
-    if isinstance(parsed_json, list) and all(isinstance(i, dict) for i in parsed_json):
-        with st.expander("Structured results (table)", expanded=False):
-            try:
-                df = pd.json_normalize(parsed_json)
-                st.dataframe(df)
-            except Exception:
-                st.write(parsed_json)
-        return
-
-    if isinstance(parsed_json, dict):
-        # top-level preferred summary
-        preferred = None
-        for key in ("summary", "description", "overview", "title"):
-            if key in parsed_json and isinstance(parsed_json[key], str) and len(parsed_json[key].strip()) > 20:
-                preferred = parsed_json[key].strip()
-                break
-        if preferred:
-            st.markdown(f"**Summary:** {preferred}")
-
-        for k, v in parsed_json.items():
-            if preferred and isinstance(v, str) and v.strip() == preferred:
-                continue
-            label = str(k)
-            with st.expander(label, expanded=False):
-                if isinstance(v, str):
-                    st.markdown(v)
-                elif isinstance(v, list) and all(isinstance(i, str) for i in v):
-                    for item in v:
-                        st.write(f"- {item}")
-                elif isinstance(v, list) and all(isinstance(i, dict) for i in v):
-                    try:
-                        df = pd.json_normalize(v)
-                        st.dataframe(df)
-                    except Exception:
-                        st.write(v)
-                elif isinstance(v, dict):
-                    simple_pairs = {}
-                    complex_items = {}
-                    for subk, subv in v.items():
-                        if isinstance(subv, (str, int, float, bool)) or (isinstance(subv, list) and all(isinstance(x, str) for x in subv)):
-                            simple_pairs[subk] = subv
-                        else:
-                            complex_items[subk] = subv
-                    if simple_pairs:
-                        df_pairs = pd.DataFrame(list(simple_pairs.items()), columns=["Field", "Value"])
-                        st.table(df_pairs)
-                    for ck, cv in complex_items.items():
-                        with st.expander(f"{ck} (details)"):
-                            st.write(cv)
-                else:
-                    st.write(v)
-    else:
-        st.write(parsed_json)
 
 # -----------------------
 # UI: Header, Demo & References
-# UI: Header
 # -----------------------
 st.title("Tentative eGov RAG - As of Oct 6th, 2025")
 st.subheader(
     "Important note: Work under progress, only answers questions until ACCESS subsection of HCM gitbook. "
     "Updated information on console and dashboard to be added."
 )
-st.title("Tentative eGov RAG — Friendly View")
-st.write("Summary shown first for non-technical users. Structured details available in expanders below.")
 
 # -----------------------
 # RAG Query Interface
 # -----------------------
 query = st.text_input("Enter your question:", placeholder="e.g., How to pay with HCM?")
-query = st.text_input("Enter your question:", placeholder="e.g., What is HCM?")
 
 if st.button("Ask"):
     if not query.strip():
         st.warning("Please enter a question first.")
     else:
         with st.spinner("Retrieving and generating answer..."):
-        with st.spinner("Retrieving answer..."):
             try:
                 # 1. Call retriever once (we'll reuse docs)
-                # 1. Get docs and answer
                 docs_and_meta = hybrid_retrieve_pg(query, top_k=5)
 
                 # 2. Generate answer (string expected). Provide retriever result wrapper so generator can use it.
-                # pass docs to generator (preserves existing behavior)
                 answer = generate_rag_answer(query, lambda q, top_k=5: docs_and_meta)
 
                 st.success("Answer:")
 
                 # 3. Inspect answer (raw text) and JSON inside it for media URLs
                 raw_urls = find_urls_in_text(answer)
-                # 2. Show human-friendly summary (display only)
-                lead = extract_human_summary(answer)
-                if lead:
-                    st.markdown(f"### {lead}")
-                else:
-                    st.info("No summary detected. See structured output below.")
 
-                # 3. Show embedded media found in answer (display-only)
-                try:
-                    # Embed any media present in the raw answer (videos/images)
-                    render_text_with_media(answer)
-                except Exception:
-                    # swallow errors — do not change content
-                    pass
-
-                # 4. Show structured JSON in a friendly form (appearance only)
                 parsed_json = None
                 try:
                     parsed_json = json.loads(answer)
@@ -482,10 +298,6 @@ if st.button("Ask"):
                                 else:
                                     doc = str(item)
                                     meta = {}
-                if parsed_json is not None:
-                    st.markdown("---")
-                    st.markdown("## More details")
-                    render_structured_json_friendly(parsed_json)
 
                             # collect urls from doc text and meta fields
                             chunk_urls: List[str] = []
@@ -525,27 +337,16 @@ if st.button("Ask"):
                         st.dataframe(df)
                     elif isinstance(parsed_json, dict):
                         st.subheader("Structured Output (JSON)")
-                    # Raw JSON expander and download
-                    with st.expander("Show raw JSON"):
                         st.json(parsed_json)
                     else:
                         render_text_with_media(answer)
 
                     if not combined_answer_urls and not embedded_from_chunks:
                         st.info("No embeddable media found in the answer or retrieved chunks.")
-                    json_bytes = json.dumps(parsed_json, indent=2).encode("utf-8")
-                    st.download_button("Download JSON", data=json_bytes, file_name="answer.json", mime="application/json")
-                else:
-                    # Not JSON: offer raw view & download
-                    with st.expander("Show raw answer"):
-                        st.code(answer)
-                    st.download_button("Download answer.txt", data=answer.encode("utf-8"), file_name="answer.txt", mime="text/plain")
 
                 # -----------------------
                 # Finally: show retrieved chunks with expanders (transparency)
                 # -----------------------
-                # 5. Transparency: list retrieved chunks in expanders (unchanged behavior)
-                st.markdown("---")
                 st.subheader("Retrieved Chunks Used")
                 try:
                     if not docs_and_meta:
@@ -571,7 +372,6 @@ if st.button("Ask"):
                                 score_str = ""
 
                             with st.expander(f"Chunk {i}{score_str}"):
-                            with st.expander(f"Chunk {i}{score_str}", expanded=False):
                                 if isinstance(doc, (dict, list)):
                                     st.write(doc)
                                 else:
