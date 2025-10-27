@@ -237,26 +237,6 @@ st.subheader(
     "Updated information on console and dashboard to be added."
 )
 
-demo_videos = [
-    {"Title": "Health Campaign Management Demo Video", "URL": "https://www.youtube.com/watch?v=_yxD9Wjqkfw&t=3s"},
-    {"Title": "Features & Workflows Walkthrough Video of HCM", "URL": "https://www.youtube.com/watch?v=NB54Ve_smv0"}
-]
-
-with st.expander("🎥 Demo Videos"):
-    for v in demo_videos:
-        st.markdown(f"**{v['Title']}**")
-        st.video(v["URL"])
-        st.divider()
-
-reference_urls = [
-    "https://docs.digit.org/health/introducing-public-health/whats-new",
-    "https://docs.digit.org/health/access/public-health-product-suite/health-campaign-management-hcm/demo"
-]
-with st.expander("🔗 Reference URLs"):
-    for url in reference_urls:
-        st.markdown(f"- [{url}]({url})")
-
-
 # -----------------------
 # RAG Query Interface
 # -----------------------
