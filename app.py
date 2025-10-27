@@ -146,37 +146,51 @@ if st.button("Ask"):
             else:
                 st.info("No summary detected. See structured output below.")
 
-            # 3. Show media found in answer (optional; display only)
-            # If you already have render_text_with_media, call it; otherwise show answer raw
-            try:
-                # render_text_with_media will embed videos/images and show text in order
-                render_text_with_media(answer)
-            except Exception:
-                # fallback: do nothing (avoid clutter) - raw JSON shown below
-                pass
-
-            # 4. Show structured JSON in friendly form (appearance only)
+            # 3. Media handling:
+            #  - If answer is not JSON -> embed inline media from the raw answer text (renders images/videos inline)
+            #  - If answer is JSON -> do NOT reprint the JSON; instead extract any URLs from the JSON and embed those media items
             parsed_json = None
             try:
                 parsed_json = json.loads(answer)
             except Exception:
                 parsed_json = None
 
+            if parsed_json is None:
+                # answer is plain text (not JSON) -> show media and text in original order
+                try:
+                    render_text_with_media(answer)
+                except Exception:
+                    # fail silently; do not print raw JSON
+                    pass
+            else:
+                # answer is structured JSON -> do NOT print the JSON raw here
+                # but embed any images/videos referenced inside the JSON (display-only)
+                try:
+                    json_urls = extract_urls_from_json(parsed_json)
+                    if json_urls:
+                        for u in json_urls:
+                            _embed_url(u)
+                except Exception:
+                    # swallow errors (we do not want to alter content)
+                    pass
+
+            # 4. Show structured JSON in friendly form (appearance only)
             if parsed_json is not None:
                 st.markdown("---")
                 st.markdown("## More details")
-                # Friendly render
+
+                # Friendly, non-technical JSON rendering
                 render_structured_json_friendly(parsed_json)
 
-                # Allow raw JSON view and download
-                with st.expander("Show raw JSON"):
+                # Allow raw JSON view and download (opt-in)
+                if st.checkbox("Show technical JSON details", value=False):
                     st.json(parsed_json)
 
-                # Download button for JSON
+                # Download JSON file
                 json_bytes = json.dumps(parsed_json, indent=2).encode("utf-8")
                 st.download_button("Download JSON", data=json_bytes, file_name="answer.json", mime="application/json")
             else:
-                # If not JSON, still offer raw view + download
+                # If not JSON, still offer raw text view + download
                 with st.expander("Show raw answer"):
                     st.code(answer)
                 st.download_button("Download answer.txt", data=answer.encode("utf-8"), file_name="answer.txt", mime="text/plain")
