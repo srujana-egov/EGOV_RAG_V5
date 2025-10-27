@@ -142,7 +142,7 @@ if st.button("Ask"):
             # 2. Show a human-friendly summary (display only; original answer remains unchanged)
             lead = extract_human_summary(answer)
             if lead:
-                st.markdown(f"### {lead}")
+                st.write(lead)
             else:
                 st.info("No summary detected. See structured output below.")
 
