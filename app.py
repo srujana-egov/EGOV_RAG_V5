@@ -23,19 +23,115 @@ st.set_page_config(page_title="RAG-TDD Demo", layout="wide")
 # (I'll include a short fallback here — replace with your robust extractor if present.)
 URL_REGEX = r'https?://[^\s)>\]"]+'
 def extract_human_summary(answer: str) -> str:
-    # Lightweight fallback: return first long paragraph or first 2 sentences
-    if not answer: return ""
-    ans = answer.replace('\r\n', '\n').replace('\r', '\n')
-    # ignore leading single 'Link' tokens
-    ans = re.sub(r'^\s*Link\s*\n+', '', ans, flags=re.IGNORECASE)
-    # split paragraphs
-    paragraphs = [p.strip() for p in re.split(r'\n\s*\n', ans) if p.strip()]
+    """
+    Robust extraction of a human-readable summary from mixed model outputs (plain text, JSON, or both).
+    - If the answer is JSON, prefer explicit summary-like keys; else pick the longest human-like string inside JSON.
+    - If not JSON or JSON has no usable text, use the first long paragraph from the raw text (before JSON if present).
+    - Falls back to first two sentences.
+    This function does not modify the original answer.
+    """
+    if not answer:
+        return ""
+
+    ans = answer.replace('\r\n', '\n').replace('\r', '\n').strip()
+
+    # helper: is this string mostly a URL or very short?
+    url_regex = re.compile(r'https?://[^\s)>\]"]+', flags=re.IGNORECASE)
+    def looks_like_url(s: str) -> bool:
+        return bool(url_regex.search(s))
+
+    # helper: recursive gather of candidate strings from JSON-like structures
+    def gather_texts(obj) -> List[str]:
+        texts: List[str] = []
+        if isinstance(obj, dict):
+            # prefer some keys first
+            for preferred_key in ("summary", "description", "overview", "title", "HCM", "Platform Name"):
+                if preferred_key in obj and isinstance(obj[preferred_key], str):
+                    v = obj[preferred_key].strip()
+                    if len(v) >= 30 and not looks_like_url(v):
+                        texts.append(v)
+                        # prefer returning immediately by placing it first
+                        return texts
+            for v in obj.values():
+                texts.extend(gather_texts(v))
+        elif isinstance(obj, list):
+            for item in obj:
+                texts.extend(gather_texts(item))
+        elif isinstance(obj, str):
+            s = obj.strip()
+            if len(s) >= 30 and not looks_like_url(s):
+                texts.append(s)
+        return texts
+
+    # 1) Try to parse entire answer as JSON
+    parsed_json = None
+    try:
+        parsed_json = json.loads(ans)
+    except Exception:
+        # 2) If that fails, try to locate the first JSON substring and parse it, keeping prefix_text separate
+        m = re.search(r'(\{|\[)', ans)
+        prefix_text = ans
+        if m:
+            pos = m.start()
+            prefix_text = ans[:pos].strip()
+            candidate = ans[pos:]
+            # best-effort: attempt to parse progressively (try full candidate first then shrink)
+            parsed_json = None
+            for end in range(len(candidate), 0, -1):
+                try:
+                    parsed_json = json.loads(candidate[:end])
+                    break
+                except Exception:
+                    continue
+        else:
+            prefix_text = ans
+            parsed_json = None
+
+    # If we have parsed JSON, try to extract best candidate text
+    if parsed_json is not None:
+        # if dict, see preferred keys first
+        if isinstance(parsed_json, dict):
+            for k in ("summary", "description", "overview", "title", "HCM", "Platform Name"):
+                v = parsed_json.get(k)
+                if isinstance(v, str):
+                    s = v.strip()
+                    if len(s) >= 30 and not looks_like_url(s):
+                        return s
+        # gather all candidate string values and choose the longest
+        candidates = gather_texts(parsed_json)
+        if candidates:
+            # pick longest by characters
+            return max(candidates, key=len).strip()
+
+        # If JSON parsed but produced no good long text, check prefix_text (text before JSON)
+        # (prefix_text was set above when JSON substring was found)
+        if 'prefix_text' in locals() and prefix_text:
+            # find first long paragraph in prefix_text
+            paras = [p.strip() for p in re.split(r'\n\s*\n', prefix_text) if p.strip()]
+            for p in paras:
+                if len(p) >= 40 and not p.strip().startswith('{'):
+                    return p
+        # no JSON candidate, fall through to raw-text fallback
+
+    # If no JSON or no good JSON candidate: use raw text fallback (prefer part before JSON if any)
+    # Remove leading labels that are noise
+    clean = re.sub(r'^\s*(Answer:|Link:|Link)\s*', '', ans, flags=re.IGNORECASE).strip()
+    # If there is a JSON start, cut it off for raw-paragraph detection
+    json_pos = min([p for p in [clean.find('{') if '{' in clean else -1, clean.find('[') if '[' in clean else -1] if p != -1] + [len(clean)])
+    raw_before_json = clean[:json_pos].strip() if json_pos > 0 else clean
+
+    paragraphs = [p.strip() for p in re.split(r'\n\s*\n', raw_before_json) if p.strip()]
     for p in paragraphs:
-        if len(p) > 60 and not p.strip().startswith('{'):
+        if len(p) >= 40 and not p.strip().startswith('{'):
             return p
-    # fallback to first two sentences
-    sents = re.split(r'(?<=[.!?])\s+', ans.strip())
-    return ' '.join(sents[:2]).strip()
+
+    # fallback: first two sentences of the whole cleaned answer
+    sents = re.split(r'(?<=[.!?])\s+', clean)
+    if sents:
+        return ' '.join(sents[:2]).strip()
+
+    # final fallback: return entire cleaned answer truncated to reasonable length
+    return (clean[:1000] + '...') if len(clean) > 1000 else clean
 
 # -----------------------
 # New: Friendly JSON renderer (appearance only)
