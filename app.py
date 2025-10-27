@@ -408,12 +408,17 @@ if st.button("Ask"):
                 else:
                     st.info("No summary detected. See structured output below.")
 
-                # 3. Show embedded media found in answer (display-only)
+                # 3. Show embedded media found in answer (display-only, WITHOUT reprinting raw JSON)
+                # We only embed URLs if the answer is NOT valid JSON (i.e., text mode)
                 try:
-                    # Embed any media present in the raw answer (videos/images)
-                    render_text_with_media(answer)
+                    # If answer is not JSON, embed any videos/images
+                    try:
+                        json.loads(answer)
+                        # If this line succeeds, skip embedding (we’ll handle JSON later)
+                        pass
+                    except json.JSONDecodeError:
+                        render_text_with_media(answer)
                 except Exception:
-                    # swallow errors — do not change content
                     pass
 
                 # 4. Show structured JSON in a friendly form (appearance only)
