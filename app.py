@@ -9,6 +9,7 @@ from typing import Any, List, Union
 from generator import generate_rag_answer
 from retrieval import hybrid_retrieve_pg
 
+st.set_page_config(page_title="RAG-TDD Demo", layout="wide")
 st.set_page_config(page_title="RAG-TDD — Friendly View", layout="wide")
 
 # -----------------------
@@ -34,6 +35,7 @@ def fetch_image_bytes(url: str, timeout: int = 10) -> Union[bytes, None]:
         return None
 
 # -----------------------
+# Patterns & helpers
 # Media detection & embedding helpers
 # -----------------------
 YOUTUBE_REGEX = r'https?://(?:www\.)?(?:youtube\.com/watch\?v=[\w-]+(?:[^\s]*)|youtu\.be/[\w-]+(?:[^\s]*))'
@@ -71,6 +73,7 @@ def _looks_like_image(url: str) -> bool:
 
 def _show_link_and_button(url: str, label: str = "Open image"):
     st.markdown(f"[Link]({url})")
+    # streamlit doesn't have a native open-in-new-tab button, but we can render HTML anchor that opens in new tab
     btn_html = f"""<a target="_blank" href="{url}"><button style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;background:#f6f6f6">🔗 {label}</button></a>"""
     st.markdown(btn_html, unsafe_allow_html=True)
 
@@ -87,19 +90,23 @@ def _embed_gitbook_proxy_if_present_and_fetch(url: str) -> bool:
             inner_encoded = q.get("url", [""])[0]
             if inner_encoded:
                 inner_decoded = urllib.parse.unquote(inner_encoded)
+                # try server-side fetch
                 img_bytes = fetch_image_bytes(inner_decoded)
                 if img_bytes:
                     st.image(img_bytes, caption="Diagram", use_container_width=True)
                     return True
                 else:
+                    # attempt fallback: try outer proxy URL server-side too (rarely works)
                     outer_bytes = fetch_image_bytes(url)
                     if outer_bytes:
                         st.image(outer_bytes, caption="Diagram (via proxy)", use_container_width=True)
                         return True
+                    # fallback to link + open-in-new-tab button
                     st.markdown("**Diagram (could not embed — opened as link)**")
                     _show_link_and_button(inner_decoded, "Open decoded image in new tab")
                     return True
         except Exception:
+            # if something goes wrong, return False to allow normal handler
             return False
     return False
 
@@ -136,6 +143,7 @@ def _embed_url(url: str):
                 st.image(bytes_inner, use_container_width=True)
                 return
             else:
+                # try outer
                 outer_bytes = fetch_image_bytes(url)
                 if outer_bytes:
                     st.image(outer_bytes, use_container_width=True)
@@ -144,6 +152,7 @@ def _embed_url(url: str):
                 _show_link_and_button(inner, "Open decoded image in new tab")
                 return
         else:
+            # if inner isn't image-like, still try fetching inner bytes (maybe direct)
             bytes_inner = fetch_image_bytes(inner)
             if bytes_inner:
                 st.image(bytes_inner, use_container_width=True)
@@ -200,7 +209,9 @@ def render_text_with_media(text: str):
         if tail:
             st.markdown(tail)
 
+
 # -----------------------
+# JSON helpers: extract URLs from JSON-like structures
 # JSON helpers: extract URLs and texts from JSON-like structures
 # -----------------------
 def extract_urls_from_json(obj: Any) -> List[str]:
@@ -216,6 +227,8 @@ def extract_urls_from_json(obj: Any) -> List[str]:
             urls.extend(extract_urls_from_json(item))
     elif isinstance(obj, str):
         urls.extend(find_urls_in_text(obj))
+    # deduplicate while preserving order
+    return list(dict.fromkeys(urls))
     return list(dict.fromkeys(urls))  # deduplicate while preserving order
 
 # -----------------------
@@ -378,29 +391,42 @@ def render_structured_json_friendly(parsed_json: Any):
         st.write(parsed_json)
 
 # -----------------------
+# UI: Header, Demo & References
 # UI: Header
 # -----------------------
+st.title("Tentative eGov RAG - As of Oct 6th, 2025")
+st.subheader(
+    "Important note: Work under progress, only answers questions until ACCESS subsection of HCM gitbook. "
+    "Updated information on console and dashboard to be added."
+)
 st.title("Tentative eGov RAG — Friendly View")
 st.write("Summary shown first for non-technical users. Structured details available in expanders below.")
 
 # -----------------------
 # RAG Query Interface
 # -----------------------
+query = st.text_input("Enter your question:", placeholder="e.g., How to pay with HCM?")
 query = st.text_input("Enter your question:", placeholder="e.g., What is HCM?")
 
 if st.button("Ask"):
     if not query.strip():
         st.warning("Please enter a question first.")
     else:
+        with st.spinner("Retrieving and generating answer..."):
         with st.spinner("Retrieving answer..."):
             try:
+                # 1. Call retriever once (we'll reuse docs)
                 # 1. Get docs and answer
                 docs_and_meta = hybrid_retrieve_pg(query, top_k=5)
+
+                # 2. Generate answer (string expected). Provide retriever result wrapper so generator can use it.
                 # pass docs to generator (preserves existing behavior)
                 answer = generate_rag_answer(query, lambda q, top_k=5: docs_and_meta)
 
                 st.success("Answer:")
 
+                # 3. Inspect answer (raw text) and JSON inside it for media URLs
+                raw_urls = find_urls_in_text(answer)
                 # 2. Show human-friendly summary (display only)
                 lead = extract_human_summary(answer)
                 if lead:
@@ -408,17 +434,12 @@ if st.button("Ask"):
                 else:
                     st.info("No summary detected. See structured output below.")
 
-                # 3. Show embedded media found in answer (display-only, WITHOUT reprinting raw JSON)
-                # We only embed URLs if the answer is NOT valid JSON (i.e., text mode)
+                # 3. Show embedded media found in answer (display-only)
                 try:
-                    # If answer is not JSON, embed any videos/images
-                    try:
-                        json.loads(answer)
-                        # If this line succeeds, skip embedding (we’ll handle JSON later)
-                        pass
-                    except json.JSONDecodeError:
-                        render_text_with_media(answer)
+                    # Embed any media present in the raw answer (videos/images)
+                    render_text_with_media(answer)
                 except Exception:
+                    # swallow errors — do not change content
                     pass
 
                 # 4. Show structured JSON in a friendly form (appearance only)
@@ -428,14 +449,90 @@ if st.button("Ask"):
                 except Exception:
                     parsed_json = None
 
+                json_urls = extract_urls_from_json(parsed_json) if parsed_json is not None else []
+                combined_answer_urls = list(dict.fromkeys(raw_urls + json_urls))
+
+                # 4. If we found media in the answer's raw text or JSON -> embed them first
+                if combined_answer_urls:
+                    for u in combined_answer_urls:
+                        _embed_url(u)
+                    # After embedding, show structured JSON/table if present
+                    if isinstance(parsed_json, list) and all(isinstance(i, dict) for i in parsed_json):
+                        st.subheader("Structured Output (table)")
+                        df = pd.json_normalize(parsed_json)
+                        st.dataframe(df)
+                    elif isinstance(parsed_json, dict):
+                        st.subheader("Structured Output (JSON)")
+                        st.json(parsed_json)
+                    else:
+                        # Also render the (possibly non-JSON) remainder in the answer
+                        render_text_with_media(answer)
+                else:
+                    # 5. No media in answer -> scan retrieved chunks for media and embed them
+                    embedded_from_chunks = False
+                    if docs_and_meta:
+                        for i, item in enumerate(docs_and_meta, start=1):
+                            # item may be (doc, meta) or a dict
+                            try:
+                                doc, meta = item
+                            except Exception:
+                                if isinstance(item, dict):
+                                    doc = item.get("doc") or item.get("text") or ""
+                                    meta = item.get("meta", {})
+                                else:
+                                    doc = str(item)
+                                    meta = {}
                 if parsed_json is not None:
                     st.markdown("---")
                     st.markdown("## More details")
                     render_structured_json_friendly(parsed_json)
 
+                            # collect urls from doc text and meta fields
+                            chunk_urls: List[str] = []
+                            if isinstance(doc, str):
+                                chunk_urls.extend(find_urls_in_text(doc))
+                            else:
+                                try:
+                                    chunk_urls.extend(find_urls_in_text(json.dumps(doc)))
+                                except Exception:
+                                    pass
+
+                            # meta might have source url(s)
+                            try:
+                                if isinstance(meta, dict):
+                                    for v in meta.values():
+                                        if isinstance(v, str):
+                                            chunk_urls.extend(find_urls_in_text(v))
+                                        else:
+                                            try:
+                                                chunk_urls.extend(find_urls_in_text(json.dumps(v)))
+                                            except Exception:
+                                                pass
+                            except Exception:
+                                pass
+
+                            chunk_urls = list(dict.fromkeys(chunk_urls))
+                            if chunk_urls:
+                                st.subheader(f"Embedded media from Retrieved Chunk {i}")
+                                for u in chunk_urls:
+                                    _embed_url(u)
+                                    embedded_from_chunks = True
+
+                    # 6. Show structured JSON / table / text (answer)
+                    if isinstance(parsed_json, list) and all(isinstance(i, dict) for i in parsed_json):
+                        st.subheader("Structured Output (table)")
+                        df = pd.json_normalize(parsed_json)
+                        st.dataframe(df)
+                    elif isinstance(parsed_json, dict):
+                        st.subheader("Structured Output (JSON)")
                     # Raw JSON expander and download
                     with st.expander("Show raw JSON"):
                         st.json(parsed_json)
+                    else:
+                        render_text_with_media(answer)
+
+                    if not combined_answer_urls and not embedded_from_chunks:
+                        st.info("No embeddable media found in the answer or retrieved chunks.")
                     json_bytes = json.dumps(parsed_json, indent=2).encode("utf-8")
                     st.download_button("Download JSON", data=json_bytes, file_name="answer.json", mime="application/json")
                 else:
@@ -444,6 +541,9 @@ if st.button("Ask"):
                         st.code(answer)
                     st.download_button("Download answer.txt", data=answer.encode("utf-8"), file_name="answer.txt", mime="text/plain")
 
+                # -----------------------
+                # Finally: show retrieved chunks with expanders (transparency)
+                # -----------------------
                 # 5. Transparency: list retrieved chunks in expanders (unchanged behavior)
                 st.markdown("---")
                 st.subheader("Retrieved Chunks Used")
@@ -470,6 +570,7 @@ if st.button("Ask"):
                             except Exception:
                                 score_str = ""
 
+                            with st.expander(f"Chunk {i}{score_str}"):
                             with st.expander(f"Chunk {i}{score_str}", expanded=False):
                                 if isinstance(doc, (dict, list)):
                                     st.write(doc)
