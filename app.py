@@ -9,7 +9,7 @@ from typing import Any, List, Union
 from generator import generate_rag_answer
 from retrieval import hybrid_retrieve_pg
 
-st.set_page_config(page_title="RAG-TDD Demo", layout="wide")
+st.set_page_config(page_title="NAME TBD", layout="wide")
 
 # -----------------------
 # (Keep your existing media helpers here: fetch_image_bytes, _embed_url, render_text_with_media, etc.)
@@ -222,8 +222,8 @@ def render_structured_json_friendly(parsed_json: Any):
 # -----------------------
 # UI: Header
 # -----------------------
-st.title("Tentative eGov RAG — Friendly View")
-st.write("Summary shown first for non-technical users. Structured details available in expanders below.")
+st.title("NAME TBD")
+st.write("Please ask your questions in as much detail as possible.")
 
 # -----------------------
 # RAG Query
