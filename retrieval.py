@@ -13,7 +13,7 @@ except Exception:
 # ---------------------------
 # Config
 # ---------------------------
-TABLE = "hcm_manual_test"
+TABLE = "hcm_manual"
 ID_COL, TXT_COL, URL_COL, TAG_COL, VER_COL = "id", "document", "url", "tag", "version"
 EMB_COL = get_env_var("EMBED_COL", "embedding")
 
