@@ -1,4 +1,5 @@
 import math
+import traceback  # add this near the top of the file if not already imported
 from typing import Any, Dict, List, Tuple
 from collections import Counter, defaultdict
 
@@ -138,6 +139,7 @@ def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMB
         base = vector_candidates(conn, query, need)
     except Exception as e:
         print("[ERROR] vector_candidates failed:", e)
+        traceback.print_exc()  # <--- this prints the full error trace
         base = []
     finally:
         try: conn.close()
