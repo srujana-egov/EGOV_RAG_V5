@@ -45,10 +45,10 @@ Answer accordingly. If possible, format the answer as a JSON array, otherwise re
 """
 
     response = client.chat.completions.create(
-    model=model,                     # e.g., "gpt-4o-mini" (faster/cheaper) or "gpt-4o"
-    messages=[{"role": "user", "content": prompt}],
-    max_tokens=4000,                 # <- correct
-    temperature=0.2
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_completion_tokens=4000,
+        temperature=0.2
     )
 
     return response.choices[0].message.content.strip()
