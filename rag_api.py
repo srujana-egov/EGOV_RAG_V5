@@ -107,13 +107,21 @@ async def query_rag(request: QueryRequest):
         logger.error(f"Error processing query: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+# In rag_api.py, replace the main block at the bottom with:
+
 if __name__ == "__main__":
-    # Check if OPENAI_API_KEY is set
-    openai_key = os.getenv('OPENAI_API_KEY')
+    # Check for OpenAI API key in multiple locations
+    openai_key = (
+        os.getenv('OPENAI_API_KEY') or  # Check environment variables
+        os.getenv('GITHUB_OPENAI_API_KEY')
+    )
+    
     if not openai_key:
-        logger.error("OPENAI_API_KEY environment variable is not set")
-        logger.error("Please make sure your .env file exists and contains OPENAI_API_KEY")
+        logger.error("OPENAI_API_KEY not found. Please set it in your environment or .env file")
         sys.exit(1)
+    
+    # Set the API key for the OpenAI library
+    os.environ['OPENAI_API_KEY'] = openai_key
     
     logger.info("Starting FastAPI server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
