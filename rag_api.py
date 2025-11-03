@@ -1,11 +1,37 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from generator import generate_rag_answer
-from retrieval import hybrid_retrieve_pg
 import uvicorn
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import os
+from typing import List, Optional
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# Database configuration
+DB_CONFIG = {
+    "user": "neondb_owner",
+    "password": "npg_UfakhcQ9MdL5",
+    "host": "ep-gentle-queen-a1gqdwzu.ap-southeast-1.aws.neon.tech",
+    "port": "5432",
+    "database": "neondb",
+    "sslmode": "require"
+}
+
+def get_db_connection():
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        conn.set_session(autocommit=True)
+        return conn
+    except Exception as e:
+        logger.error(f"Error connecting to database: {str(e)}")
+        raise
 
 # Enable CORS
 app.add_middleware(
@@ -22,18 +48,52 @@ class QueryRequest(BaseModel):
 
 @app.post("/query")
 async def query_rag(request: QueryRequest):
+    conn = None
     try:
-        # Call your existing RAG functions
-        retrieved_chunks = hybrid_retrieve_pg(request.query, top_k=request.top_k)
-        answer = generate_rag_answer(request.query, retrieved_chunks)
+        logger.info(f"Received query: {request.query}")
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
+        # Example query - modify according to your schema
+        cursor.execute("""
+            SELECT * FROM your_table 
+            WHERE your_search_column ILIKE %s 
+            LIMIT %s
+        """, (f"%{request.query}%", request.top_k))
+        
+        results = cursor.fetchall()
+        
+        if not results:
+            return {
+                "answer": f"No results found for: {request.query}",
+                "sources": []
+            }
+            
         return {
-            "answer": answer,
-            "sources": [{"content": chunk.page_content, "metadata": chunk.metadata} 
-                       for chunk in retrieved_chunks]
+            "answer": f"Found {len(results)} results for: {request.query}",
+            "sources": [
+                {
+                    "content": str(result),  # Convert result row to string
+                    "metadata": {"source": "neondb"}
+                } 
+                for result in results
+            ]
         }
+            
     except Exception as e:
+        logger.error(f"Error processing query: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
 
 if __name__ == "__main__":
+    # First install required package if not already installed
+    try:
+        import psycopg2
+    except ImportError:
+        import sys
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "psycopg2-binary"])
+        
     uvicorn.run(app, host="0.0.0.0", port=8000)
