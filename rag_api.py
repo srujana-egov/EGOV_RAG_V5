@@ -58,24 +58,21 @@ class QueryRequest(BaseModel):
     query: str
     top_k: int = 5
 
+# In rag_api.py, update the query_rag function:
+
 @app.post("/query")
 async def query_rag(request: QueryRequest):
-    conn = None
     try:
         logger.info(f"Processing query: {request.query}")
         
-        # Get a connection from the pool
-        conn = db_pool.getconn()
-        
-        # Use the connection with your retrieval function
-        # Note: Make sure hybrid_retrieve_pg is imported and accepts a conn parameter
+        # Import here to avoid circular imports
         from retrieval import hybrid_retrieve_pg
         from generator import generate_rag_answer
         
+        # Call hybrid_retrieve_pg without the conn parameter
         docs_and_meta = hybrid_retrieve_pg(
-            request.query, 
-            top_k=request.top_k,
-            conn=conn
+            query=request.query, 
+            top_k=request.top_k
         )
         
         answer = generate_rag_answer(request.query, lambda q, top_k: docs_and_meta)
