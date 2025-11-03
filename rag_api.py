@@ -1,8 +1,17 @@
-# At the top with other imports
-import psycopg2
-from psycopg2 import pool
+# Load environment variables FIRST
+import os
+from dotenv import load_dotenv
+load_dotenv()  # This must be before any other imports
 
-# ... (keep all existing imports and setup code) ...
+# Now import other modules
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import uvicorn
+from typing import List, Dict, Any
+import logging
+import json
+import sys
 
 # After loading environment variables, add database connection pool
 try:
