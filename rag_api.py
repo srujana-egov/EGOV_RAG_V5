@@ -1,94 +1,44 @@
-# Load environment variables FIRST
-import os
-from dotenv import load_dotenv
-load_dotenv()  # This must be before any other imports
+# At the top with other imports
+import psycopg2
+from psycopg2 import pool
 
-# Now import other modules
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import uvicorn
-from typing import List, Dict, Any
-import logging
-import json
-import sys
+# ... (keep all existing imports and setup code) ...
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Debug: Print current working directory and .env file location
-cwd = os.getcwd()
-env_path = os.path.join(cwd, '.env')
-logger.info(f"Current working directory: {cwd}")
-logger.info(f"Looking for .env file at: {env_path}")
-
-# Debug: List files in current directory
-logger.info("Files in current directory:")
-for f in os.listdir(cwd):
-    if f.startswith('.'):  # Show hidden files
-        logger.info(f"  {f}")
-
-# Debug: Check if .env exists and can be read
-if os.path.exists(env_path):
-    logger.info(".env file found, contents:")
-    try:
-        with open(env_path, 'r') as f:
-            # Mask sensitive values
-            lines = []
-            for line in f:
-                if 'key' in line.lower() or 'secret' in line.lower() or 'password' in line.lower() or 'api' in line.lower():
-                    key, sep, value = line.partition('=')
-                    lines.append(f"{key}{sep}***MASKED***")
-                else:
-                    lines.append(line.strip())
-            logger.info("\n".join(lines))
-    except Exception as e:
-        logger.error(f"Error reading .env file: {e}")
-else:
-    logger.warning(".env file not found!")
-
-# Debug: Print all environment variables (masking sensitive ones)
-logger.info("Environment variables:")
-for key, value in os.environ.items():
-    if any(s in key.lower() for s in ['key', 'secret', 'password', 'api']):
-        logger.info(f"  {key}=***MASKED***")
-    else:
-        logger.info(f"  {key}={value}")
-
-# Now import your RAG functions
+# After loading environment variables, add database connection pool
 try:
-    from retrieval import hybrid_retrieve_pg
-    from generator import generate_rag_answer
-except ImportError as e:
-    logger.error(f"Failed to import RAG modules: {e}")
+    # Create a connection pool
+    db_pool = psycopg2.pool.SimpleConnectionPool(
+        minconn=1,
+        maxconn=10,
+        user=os.getenv('PGUSER', 'neondb_owner'),
+        password=os.getenv('PGPASSWORD', 'npg_UfakhcQ9MdL5'),
+        host=os.getenv('PGHOST', 'ep-gentle-queen-a1gqdwzu.ap-southeast-1.aws.neon.tech'),
+        port=os.getenv('PGPORT', '5432'),
+        database=os.getenv('PGDATABASE', 'neondb'),
+        sslmode=os.getenv('PGSSLMODE', 'require')
+    )
+    logger.info("Successfully created database connection pool")
+except Exception as e:
+    logger.error(f"Error creating database connection pool: {e}")
     sys.exit(1)
 
-app = FastAPI()
-
-# Enable CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-class QueryRequest(BaseModel):
-    query: str
-    top_k: int = 5
-
+# Update your query_rag function to use the connection pool
 @app.post("/query")
 async def query_rag(request: QueryRequest):
+    conn = None
     try:
         logger.info(f"Processing query: {request.query}")
         
-        # Use the same retrieval and generation logic as your Streamlit app
-        docs_and_meta = hybrid_retrieve_pg(request.query, top_k=request.top_k)
+        # Get a connection from the pool
+        conn = db_pool.getconn()
+        
+        # Use the connection with your retrieval function
+        docs_and_meta = hybrid_retrieve_pg(
+            request.query, 
+            top_k=request.top_k,
+            conn=conn  # Make sure hybrid_retrieve_pg accepts a conn parameter
+        )
+        
         answer = generate_rag_answer(request.query, lambda q, top_k: docs_and_meta)
         
         # Format the response
@@ -102,16 +52,23 @@ async def query_rag(request: QueryRequest):
                 for doc, meta in docs_and_meta
             ]
         }
-            
     except Exception as e:
         logger.error(f"Error processing query: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Always return the connection to the pool
+        if conn:
+            db_pool.putconn(conn)
 
-# In rag_api.py, replace the main block at the bottom with:
-
+# At the bottom of the file
 if __name__ == "__main__":
-    # Check for OpenAI API key in multiple locations
-    openai_key = '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'
+    # Check for required environment variables
+    required_vars = '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'
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        sys.exit(1)
     
     logger.info("Starting FastAPI server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
