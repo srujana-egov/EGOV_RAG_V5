@@ -111,17 +111,7 @@ async def query_rag(request: QueryRequest):
 
 if __name__ == "__main__":
     # Check for OpenAI API key in multiple locations
-    openai_key = (
-        os.getenv('OPENAI_API_KEY') or  # Check environment variables
-        os.getenv('GITHUB_OPENAI_API_KEY')
-    )
-    
-    if not openai_key:
-        logger.error("OPENAI_API_KEY not found. Please set it in your environment or .env file")
-        sys.exit(1)
-    
-    # Set the API key for the OpenAI library
-    os.environ['OPENAI_API_KEY'] = openai_key
+    openai_key = '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'
     
     logger.info("Starting FastAPI server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
