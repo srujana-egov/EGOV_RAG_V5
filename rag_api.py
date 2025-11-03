@@ -11,6 +11,9 @@ import json
 from retrieval import hybrid_retrieve_pg
 from generator import generate_rag_answer
 
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables from .env file
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
