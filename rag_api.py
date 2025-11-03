@@ -109,7 +109,7 @@ async def query_rag(request: QueryRequest):
 
 if __name__ == "__main__":
     # Check if OPENAI_API_KEY is set
-    openai_key = os.getenv("OPENAI_API_KEY")
+    openai_key =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
     if not openai_key:
         logger.error("OPENAI_API_KEY environment variable is not set")
         logger.error("Please make sure your .env file exists and contains OPENAI_API_KEY")
