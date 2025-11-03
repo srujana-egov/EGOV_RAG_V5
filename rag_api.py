@@ -1,19 +1,42 @@
 # Load environment variables FIRST
 import os
+import sys
+import logging
 from dotenv import load_dotenv
 load_dotenv()  # This must be before any other imports
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Now import other modules
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
-from typing import List, Dict, Any
-import logging
+from typing import List, Dict, Any, Optional
+import psycopg2
+from psycopg2 import pool
 import json
-import sys
 
-# After loading environment variables, add database connection pool
+# Initialize FastAPI app
+app = FastAPI()
+
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Database connection pool
+db_pool = None
+
 try:
     # Create a connection pool
     db_pool = psycopg2.pool.SimpleConnectionPool(
@@ -31,7 +54,10 @@ except Exception as e:
     logger.error(f"Error creating database connection pool: {e}")
     sys.exit(1)
 
-# Update your query_rag function to use the connection pool
+class QueryRequest(BaseModel):
+    query: str
+    top_k: int = 5
+
 @app.post("/query")
 async def query_rag(request: QueryRequest):
     conn = None
@@ -42,15 +68,18 @@ async def query_rag(request: QueryRequest):
         conn = db_pool.getconn()
         
         # Use the connection with your retrieval function
+        # Note: Make sure hybrid_retrieve_pg is imported and accepts a conn parameter
+        from retrieval import hybrid_retrieve_pg
+        from generator import generate_rag_answer
+        
         docs_and_meta = hybrid_retrieve_pg(
             request.query, 
             top_k=request.top_k,
-            conn=conn  # Make sure hybrid_retrieve_pg accepts a conn parameter
+            conn=conn
         )
         
         answer = generate_rag_answer(request.query, lambda q, top_k: docs_and_meta)
         
-        # Format the response
         return {
             "answer": answer,
             "sources": [
@@ -69,14 +98,14 @@ async def query_rag(request: QueryRequest):
         if conn:
             db_pool.putconn(conn)
 
-# At the bottom of the file
 if __name__ == "__main__":
     # Check for required environment variables
-    required_vars = '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'
+    required_vars = ['OPENAI_API_KEY']
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
         logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        logger.error("Please make sure your .env file exists and contains all required variables")
         sys.exit(1)
     
     logger.info("Starting FastAPI server...")
