@@ -69,7 +69,7 @@ async def query_rag(request: QueryRequest):
         from retrieval import hybrid_retrieve_pg
         from generator import generate_rag_answer
         
-        # Call hybrid_retrieve_pg without the conn parameter
+        # Call hybrid_retrieve_pg without any connection parameter
         docs_and_meta = hybrid_retrieve_pg(
             query=request.query, 
             top_k=request.top_k
@@ -90,10 +90,6 @@ async def query_rag(request: QueryRequest):
     except Exception as e:
         logger.error(f"Error processing query: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        # Always return the connection to the pool
-        if conn:
-            db_pool.putconn(conn)
 
 if __name__ == "__main__":
     # Check for required environment variables
