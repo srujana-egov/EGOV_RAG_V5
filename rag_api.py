@@ -2,8 +2,16 @@
 import os
 import sys
 import logging
+
+# In your code where you initialize the OpenAI client:
+import os
+from openai import OpenAI
+
 from dotenv import load_dotenv
 load_dotenv()  # This must be before any other imports
+
+# This will automatically use the OPENAI_API_KEY environment variable
+client = OpenAI()
 
 # Set up logging
 logging.basicConfig(
