@@ -10,7 +10,7 @@ from generator import generate_rag_answer
 from retrieval import hybrid_retrieve_pg
 
 # --- Top Logo ---
-st.image("egov_logo.png", width=200)
+st.image("eGov-logo.png", width=200)
 
 st.set_page_config(page_title="miGo", layout="wide")
 
