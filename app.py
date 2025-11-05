@@ -9,7 +9,10 @@ from typing import Any, List, Union
 from generator import generate_rag_answer
 from retrieval import hybrid_retrieve_pg
 
-st.set_page_config(page_title="NAME TBD", layout="wide")
+# --- Top Logo ---
+st.image("egov_logo.png", width=200)
+
+st.set_page_config(page_title="miGo", layout="wide")
 
 # -----------------------
 # (Keep your existing media helpers here: fetch_image_bytes, _embed_url, render_text_with_media, etc.)
