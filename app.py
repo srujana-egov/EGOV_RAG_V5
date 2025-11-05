@@ -225,8 +225,8 @@ def render_structured_json_friendly(parsed_json: Any):
 # -----------------------
 # UI: Header
 # -----------------------
-st.title("NAME TBD")
-st.write("Please ask your questions in as much detail as possible.")
+st.title("miGo")
+st.write("Your assistant to explore all things eGov!")
 
 # -----------------------
 # RAG Query
