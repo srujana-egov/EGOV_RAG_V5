@@ -188,7 +188,7 @@ def hybrid_retrieve_pg(query: str, top_k: int = 20, mmr_lambda: float = MMR_LAMB
     # MMR selection
     # ---------------------------
     q_vec = _tf_dict(query)
-    selected = mmr_select_url_aware(cands, q_vec=q_vec, k=max(top_k, 5), lambda_=mmr_lambda)
+    selected = mmr_select_url_aware(cands, q_vec=q_vec, k=max(top_k, 15), lambda_=mmr_lambda)
 
     # ---------------------------
     # Merge chunks safely by normalized URL
