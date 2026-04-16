@@ -750,36 +750,16 @@ def load_qa_cache(conn):
             raise e
 
 
-def generate_studio_jsonl():
-    """Generate JSONL for vector ingestion."""
-    chunks = []
-
-    for i, qa in enumerate(STUDIO_QA):
-        combined = f"Q: {qa['question']}\n\nA: {qa['answer']}"
-
-        chunks.append({
-            "id": f"studio_qa/{i:03d}",
-            "title": qa["question"][:80],
-            "document": combined,
-            "url": "https://docs.digit.org/studio",
-            "tag": "studio",
-            "version": "v1"
-        })
-
-    os.makedirs("data", exist_ok=True)
-    output_path = os.path.join("data", "studio_chunks.jsonl")
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        for chunk in chunks:
-            f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
-
-    print(f"✅ Generated {output_path} with {len(chunks)} chunks")
-    return output_path
-
-
 # ─────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────
+# NOTE: studio_manual (the vector table) must NOT contain the same Q&A pairs
+# that are already in predetermined_qa. Duplicating them there means paying
+# embedding fees to retrieve answers that are already served instantly from
+# the in-memory cache.
+#
+# Ingest real documentation into studio_manual instead:
+#   python ingest_fixed.py --file data/<real_docs>.jsonl
 def main():
     print("=" * 50)
     print("DIGIT Studio — Data Setup")
@@ -796,14 +776,12 @@ def main():
         print("\n2. Clearing old Health/HCM data...")
         clear_health_data(conn, table=os.getenv("DB_TABLE", "studio_manual"))
 
-        print("\n3. Loading Studio Q&A...")
+        print("\n3. Loading Studio Q&A into predetermined_qa cache...")
         load_qa_cache(conn)
-
-        print("\n4. Generating JSONL...")
-        generate_studio_jsonl()
 
         print("\n" + "=" * 50)
         print("✅ Setup complete!")
+        print("Note: ingest real documentation into studio_manual separately.")
         print("=" * 50)
 
     finally:

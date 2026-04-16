@@ -21,11 +21,21 @@ _STOP_WORDS = {
     "about", "into", "after", "before", "during", "while", "there",
 }
 
+_WEAK_WORDS = {"create", "new", "make", "add", "get", "set", "use", "see",
+               "view", "edit", "show", "find", "list", "all", "any"}
+
+
+def _stem(word: str) -> str:
+    for suffix in ("ings", "ing", "tion", "tions", "ed", "ers", "er", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[: -len(suffix)]
+    return word
+
 
 def _tokenize(text: str) -> set:
-    """Extract clean lowercase alphanumeric tokens, drop stop words and short words."""
+    """Extract stemmed, meaningful tokens — mirrors app.py _tokenize."""
     return set(
-        w for w in re.findall(r'[a-z0-9]+', text.lower())
+        _stem(w) for w in re.findall(r'[a-z0-9]+', text.strip().lower())
         if len(w) >= 3 and w not in _STOP_WORDS
     )
 
@@ -35,6 +45,8 @@ def get_predetermined_answer(query: str, rows):
     q_words = _tokenize(q)
     if not q_words:
         return None, 0.0, None
+
+    q_strong = q_words - _WEAK_WORDS
 
     best_match = None
     best_score = 0.0
@@ -53,9 +65,16 @@ def get_predetermined_answer(query: str, rows):
         if not common:
             continue
 
-        query_coverage = len(common) / len(q_words)
-        if query_coverage >= 0.5 and query_coverage > best_score:
-            best_score = query_coverage
+        jaccard = len(common) / len(q_words | p_words)
+
+        strong_common = q_strong & p_words
+        if q_strong and strong_common:
+            score = jaccard + 0.2 * (len(strong_common) / len(q_strong))
+        else:
+            score = jaccard * 0.5
+
+        if score >= 0.25 and score > best_score:
+            best_score = score
             best_match = answer
             best_question = question
 

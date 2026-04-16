@@ -3,6 +3,7 @@ DIGIT Studio Support Bot
 """
 
 import re
+import pandas as pd
 import streamlit as st
 from generator import stream_rag_pipeline, OUT_OF_DOMAIN_MSG
 from retrieval import hybrid_retrieve_pg
@@ -10,9 +11,13 @@ from retrieval import hybrid_retrieve_pg
 from utils import (
     get_conn,
     log_feedback,
+    log_query,
     ensure_feedback_table,
     ensure_qa_table_full,
+    ensure_query_history_table,
     update_qa_votes_and_promote,
+    get_query_history,
+    get_flagged_queries,
 )
 
 # ─────────────────────────────────────────────
@@ -24,8 +29,25 @@ st.set_page_config(page_title="DIGIT Studio Assistant", page_icon="🛠️", lay
 try:
     ensure_feedback_table()
     ensure_qa_table_full()
+    ensure_query_history_table()
 except Exception:
     pass
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_qa_cache():
+    """
+    Load all predetermined Q&A rows into memory once per process (refreshes
+    every 5 min to pick up auto-promoted entries). Avoids a DB round-trip on
+    every chat message.
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, question, answer, confidence FROM predetermined_qa")
+            return cur.fetchall()
+    finally:
+        conn.close()
 
 
 # ─────────────────────────────────────────────
@@ -41,70 +63,91 @@ _STOP_WORDS = {
     "about", "into", "after", "before", "during", "while", "there",
 }
 
+# Generic action/modifier words that are too common to be meaningful on their own
+_WEAK_WORDS = {"create", "new", "make", "add", "get", "set", "use", "see",
+               "view", "edit", "show", "find", "list", "all", "any"}
+
+
+def _stem(word: str) -> str:
+    """Strip common English suffixes so 'workflows' matches 'workflow', etc."""
+    for suffix in ("ings", "ing", "tion", "tions", "ed", "ers", "er", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[: -len(suffix)]
+    return word
+
+
+def _tokenize(text: str) -> set:
+    """Extract stemmed, meaningful tokens from text."""
+    return set(
+        _stem(w) for w in re.findall(r'[a-z0-9]+', text.strip().lower())
+        if len(w) >= 3 and w not in _STOP_WORDS
+    )
+
 
 def get_predetermined_answer(query: str):
     """
-    Match query against predetermined Q&A cache.
-    Returns the best match dict if confident (>= 50% query coverage),
+    Match query against predetermined Q&A cache using Jaccard similarity
+    on stemmed tokens. Returns the best match dict if score >= 0.25,
     or None to fall through to RAG.
+
+    Jaccard = |common| / |union| guards against one-sided matches where
+    generic shared words (e.g. 'create', 'new') inflate a one-directional
+    coverage score.
+
+    Rows are loaded from _load_qa_cache() (in-memory, refreshed every 5 min)
+    so no DB hit happens per message.
     """
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, question, answer, confidence FROM predetermined_qa")
-            rows = cur.fetchall()
+    rows = _load_qa_cache()
 
-        q = query.strip().lower()
-        # Use regex to extract clean alphanumeric tokens — strips punctuation,
-        # quotes, brackets, slashes so "sms/email", '"Service"', "(dev," all
-        # split and clean correctly.
-        q_words = set(
-            w for w in re.findall(r'[a-z0-9]+', q)
-            if len(w) >= 3 and w not in _STOP_WORDS
-        )
+    q = query.strip().lower()
+    q_words = _tokenize(q)
 
-        if not q_words:
-            return None
+    if not q_words:
+        return None
 
-        best_match = None
-        best_score = 0.0
+    # Downweight tokens that are too generic to distinguish topics
+    q_strong = q_words - _WEAK_WORDS
 
-        for row_id, question, answer, confidence in rows:
-            p = question.strip().lower()
+    best_match = None
+    best_score = 0.0
 
-            # Exact match → return immediately with full confidence
-            if q == p:
-                return {"id": row_id, "answer": answer, "confidence": 1.0}
+    for row_id, question, answer, confidence in rows:
+        p = question.strip().lower()
 
-            p_words = set(
-                w for w in re.findall(r'[a-z0-9]+', p)
-                if len(w) >= 3 and w not in _STOP_WORDS
-            )
-            if not p_words:
-                continue
+        # Exact match → return immediately with full confidence
+        if q == p:
+            return {"id": row_id, "answer": answer, "confidence": 1.0}
 
-            common = q_words & p_words
-            if not common:
-                continue
+        p_words = _tokenize(p)
+        if not p_words:
+            continue
 
-            # Coverage = what fraction of the query's key words appear in the question
-            query_coverage = len(common) / len(q_words)
+        common = q_words & p_words
+        if not common:
+            continue
 
-            # Require >= 50% coverage to be a "sure" match
-            if query_coverage >= 0.5 and query_coverage > best_score:
-                best_score = query_coverage
-                # Use the lower of DB confidence and match score
-                effective_confidence = min(float(confidence or 1.0), query_coverage)
-                best_match = {
-                    "id": row_id,
-                    "answer": answer,
-                    "confidence": effective_confidence,
-                }
+        # Jaccard similarity over all tokens
+        jaccard = len(common) / len(q_words | p_words)
 
-        return best_match
+        # Bonus: if strong (domain-specific) tokens match, boost the score
+        strong_common = q_strong & p_words
+        if q_strong and strong_common:
+            strong_bonus = len(strong_common) / len(q_strong)
+            score = jaccard + 0.2 * strong_bonus
+        else:
+            # No domain-specific token matched — penalise heavily
+            score = jaccard * 0.5
 
-    finally:
-        conn.close()
+        if score >= 0.25 and score > best_score:
+            best_score = score
+            effective_confidence = min(float(confidence or 1.0), score)
+            best_match = {
+                "id": row_id,
+                "answer": answer,
+                "confidence": effective_confidence,
+            }
+
+    return best_match
 
 
 # ─────────────────────────────────────────────
@@ -116,6 +159,74 @@ if "history" not in st.session_state:
 if "messages" not in st.session_state:
     # Each assistant message also stores: query, source, feedback
     st.session_state.messages = []
+
+if "admin_authed" not in st.session_state:
+    st.session_state.admin_authed = False
+
+
+# ─────────────────────────────────────────────
+# Admin panel (sidebar)
+# ─────────────────────────────────────────────
+_ADMIN_PASSWORD = get_env_var("ADMIN_PASSWORD", "")
+
+with st.sidebar:
+    st.markdown("### Admin")
+
+    if not st.session_state.admin_authed:
+        pwd = st.text_input("Password", type="password", key="admin_pwd_input")
+        if st.button("Login", key="admin_login"):
+            if _ADMIN_PASSWORD and pwd == _ADMIN_PASSWORD:
+                st.session_state.admin_authed = True
+                st.rerun()
+            else:
+                st.error("Incorrect password")
+    else:
+        if st.button("Logout", key="admin_logout"):
+            st.session_state.admin_authed = False
+            st.rerun()
+
+        tab_hist, tab_flagged = st.tabs(["Query History", "Flagged"])
+
+        with tab_hist:
+            if st.button("Refresh", key="refresh_hist"):
+                st.cache_data.clear()
+            rows = get_query_history(limit=200)
+            if rows:
+                df = pd.DataFrame(rows)
+                df["created_at"] = pd.to_datetime(df["created_at"]).dt.strftime("%Y-%m-%d %H:%M")
+                df = df.rename(columns={
+                    "created_at": "Time", "query": "Query",
+                    "answer_snippet": "Answer", "source": "Source"
+                })
+                source_filter = st.selectbox(
+                    "Filter by source", ["all", "cache", "rag", "out_of_domain"],
+                    key="hist_source_filter"
+                )
+                if source_filter != "all":
+                    df = df[df["Source"] == source_filter]
+                st.dataframe(df[["Time", "Source", "Query"]], use_container_width=True)
+                with st.expander("Show full answers"):
+                    st.dataframe(df, use_container_width=True)
+            else:
+                st.info("No queries logged yet.")
+
+        with tab_flagged:
+            if st.button("Refresh", key="refresh_flagged"):
+                st.cache_data.clear()
+            flagged = get_flagged_queries()
+            if flagged:
+                df_f = pd.DataFrame(flagged)
+                df_f["created_at"] = pd.to_datetime(df_f["created_at"]).dt.strftime("%Y-%m-%d %H:%M")
+                df_f = df_f.rename(columns={
+                    "created_at": "Time", "query": "Query",
+                    "answer_snippet": "Answer", "source": "Source", "comment": "Comment"
+                })
+                st.markdown(f"**{len(df_f)} flagged queries**")
+                st.dataframe(df_f[["Time", "Source", "Query", "Comment"]], use_container_width=True)
+                with st.expander("Show full answers"):
+                    st.dataframe(df_f, use_container_width=True)
+            else:
+                st.success("No flagged queries.")
 
 
 # ─────────────────────────────────────────────
@@ -156,6 +267,7 @@ for i, msg in enumerate(st.session_state.messages):
                             update_qa_votes_and_promote(
                                 msg.get("query", ""), msg["content"], "positive"
                             )
+                            _load_qa_cache.clear()  # bust in-memory cache so promotion is visible
                             st.session_state.messages[i]["feedback"] = "positive"
                             st.rerun()
                     with col2:
@@ -223,6 +335,9 @@ if query:
                 container.markdown(full_answer)
 
             answer = full_answer
+
+    # Log every query to query_history (regardless of feedback)
+    log_query(query, answer, source)
 
     # Append assistant message with metadata for feedback buttons
     st.session_state.messages.append({

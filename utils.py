@@ -59,6 +59,89 @@ def get_conn():
 
 
 # ─────────────────────────────────────────────
+# Query history table
+# ─────────────────────────────────────────────
+def ensure_query_history_table():
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS query_history (
+                    id SERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    query TEXT,
+                    answer_snippet TEXT,
+                    source VARCHAR(20)
+                )
+            """)
+        conn.commit()
+    except Exception as e:
+        print(f"[DB] Could not create query_history table: {e}")
+    finally:
+        conn.close()
+
+
+def log_query(query: str, answer: str, source: str):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO query_history (query, answer_snippet, source)
+                VALUES (%s, %s, %s)
+            """, (query, answer[:500], source))
+        conn.commit()
+    except Exception as e:
+        print(f"[QueryHistory] Log failed: {e}")
+    finally:
+        conn.close()
+
+
+def get_query_history(limit: int = 200) -> list:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT created_at, query, answer_snippet, source
+                FROM query_history
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (limit,))
+            rows = cur.fetchall()
+            return [
+                {"created_at": r[0], "query": r[1], "answer_snippet": r[2], "source": r[3]}
+                for r in rows
+            ]
+    except Exception as e:
+        print(f"[QueryHistory] Fetch failed: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_flagged_queries() -> list:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT created_at, query, answer_snippet, source, comment
+                FROM bot_feedback
+                WHERE is_flagged = TRUE
+                ORDER BY created_at DESC
+            """)
+            rows = cur.fetchall()
+            return [
+                {"created_at": r[0], "query": r[1], "answer_snippet": r[2],
+                 "source": r[3], "comment": r[4] or ""}
+                for r in rows
+            ]
+    except Exception as e:
+        print(f"[QueryHistory] Flagged fetch failed: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────
 # Ensure feedback table (with is_flagged column)
 # ─────────────────────────────────────────────
 def ensure_feedback_table():
