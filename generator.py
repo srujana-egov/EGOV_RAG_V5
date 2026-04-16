@@ -96,21 +96,19 @@ def chat_with_assistant(query: str, docs: list, history: list = None, model: str
 # Streaming answer — yields chunks as they arrive
 # ─────────────────────────────────────────────
 def stream_rag_answer(query: str, docs: list, history: list = None, model: str = "gpt-4"):
-    """
-    Generator that yields text chunks as they stream from OpenAI.
-    Use with Streamlit's st.write_stream() or manual accumulation.
-    """
     messages = _build_messages(query, docs, history)
+
     with _get_client().chat.completions.stream(
         model=model,
         messages=messages,
         max_tokens=2000,
         temperature=0.2
     ) as stream:
-        for text in stream.text_stream:
-            yield text
-
-
+        for event in stream:
+            if event.type == "delta":
+                delta = event.delta
+                if delta and "content" in delta:
+                    yield delta["content"]
 # ─────────────────────────────────────────────
 # Full RAG pipeline (non-streaming, for internal use)
 # ─────────────────────────────────────────────
