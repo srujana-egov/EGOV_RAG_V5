@@ -2,6 +2,7 @@
 DIGIT Studio Support Bot
 """
 
+import re
 import streamlit as st
 from generator import stream_rag_pipeline, OUT_OF_DOMAIN_MSG
 from retrieval import hybrid_retrieve_pg
@@ -54,8 +55,11 @@ def get_predetermined_answer(query: str):
             rows = cur.fetchall()
 
         q = query.strip().lower()
+        # Use regex to extract clean alphanumeric tokens — strips punctuation,
+        # quotes, brackets, slashes so "sms/email", '"Service"', "(dev," all
+        # split and clean correctly.
         q_words = set(
-            w for w in q.split()
+            w for w in re.findall(r'[a-z0-9]+', q)
             if len(w) >= 3 and w not in _STOP_WORDS
         )
 
@@ -73,7 +77,7 @@ def get_predetermined_answer(query: str):
                 return {"id": row_id, "answer": answer, "confidence": 1.0}
 
             p_words = set(
-                w for w in p.split()
+                w for w in re.findall(r'[a-z0-9]+', p)
                 if len(w) >= 3 and w not in _STOP_WORDS
             )
             if not p_words:
