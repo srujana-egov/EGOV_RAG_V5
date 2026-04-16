@@ -10,9 +10,6 @@ from utils import (
     get_conn,
     get_env_var,
     log_feedback,
-    get_recent_feedback,
-    get_feedback_stats,
-    insert_chunk,
     ensure_feedback_table
 )
 
@@ -57,7 +54,20 @@ _ensure_qa_table()
 
 
 # ─────────────────────────────────────────────
-# Predetermined answer logic (FIXED)
+# Domain check (NEW)
+# ─────────────────────────────────────────────
+def is_domain_query(query: str) -> bool:
+    keywords = [
+        "digit", "studio", "workflow", "service", "module",
+        "form", "approval", "api", "config", "role",
+        "notification", "deploy", "authentication"
+    ]
+    q = query.lower()
+    return any(k in q for k in keywords)
+
+
+# ─────────────────────────────────────────────
+# Predetermined answer logic
 # ─────────────────────────────────────────────
 def get_predetermined_answer(query: str, threshold: float = 0.85):
     conn = get_conn()
@@ -83,7 +93,6 @@ def get_predetermined_answer(query: str, threshold: float = 0.85):
 
             common_words = q_words & p_words
 
-            # require at least 2 meaningful words
             if len(common_words) < 2:
                 continue
 
@@ -94,8 +103,7 @@ def get_predetermined_answer(query: str, threshold: float = 0.85):
                 best_match = {
                     "id": row_id,
                     "answer": answer,
-                    "confidence": confidence,
-                    "overlap": overlap
+                    "confidence": confidence
                 }
 
         return best_match
@@ -118,19 +126,13 @@ def update_qa_confidence(qa_id: int, positive: bool):
             if positive:
                 cur.execute("""
                     UPDATE predetermined_qa
-                    SET positive_votes = positive_votes + 1,
-                        confidence = (positive_votes + 1.0) /
-                                     NULLIF(positive_votes + negative_votes + 1, 0),
-                        updated_at = NOW()
+                    SET positive_votes = positive_votes + 1
                     WHERE id = %s
                 """, (qa_id,))
             else:
                 cur.execute("""
                     UPDATE predetermined_qa
-                    SET negative_votes = negative_votes + 1,
-                        confidence = positive_votes::float /
-                                     NULLIF(positive_votes + negative_votes + 1, 0),
-                        updated_at = NOW()
+                    SET negative_votes = negative_votes + 1
                     WHERE id = %s
                 """, (qa_id,))
         conn.commit()
@@ -141,14 +143,14 @@ def update_qa_confidence(qa_id: int, positive: bool):
 # ─────────────────────────────────────────────
 # Promote RAG answer to cache
 # ─────────────────────────────────────────────
-def promote_to_cache(query: str, answer: str, confidence: float = 0.7):
+def promote_to_cache(query: str, answer: str):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO predetermined_qa (question, answer, confidence, source)
                 VALUES (%s, %s, %s, 'rag_promoted')
-            """, (query, answer, confidence))
+            """, (query, answer, 0.7))
         conn.commit()
     finally:
         conn.close()
@@ -170,7 +172,6 @@ if "messages" not in st.session_state:
 st.title("🛠️ DIGIT Studio Assistant")
 st.caption("Ask anything about DIGIT Studio")
 
-# Display chat
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -196,49 +197,53 @@ if query:
             st.caption(f"⚡ Instant answer · {cached['confidence']:.0%}")
 
         else:
-            # STEP 2: RAG
-            full_answer = ""
-            container = st.empty()
-
-            try:
-                has_content = False
-
-                for chunk in stream_rag_pipeline(
-                    query=query,
-                    hybrid_retrieve_pg=hybrid_retrieve_pg,
-                    top_k=5,
-                    model="gpt-4",
-                    history=st.session_state.history
-                ):
-                    has_content = True
-                    full_answer += chunk
-                    container.markdown(full_answer + "▌")
-
-                # fallback only if RAG failed
-                if not has_content or "I don't have enough information" in full_answer:
-                    full_answer = (
-                        "I couldn't find a clear answer in DIGIT Studio documentation.\n\n"
-                        "📎 Try rephrasing your question or be more specific.\n\n"
-                        "Examples:\n"
-                        "- How to configure workflows?\n"
-                        "- How does authentication work in DIGIT?\n"
-                        "- How to deploy services?"
-                    )
-
-                container.markdown(full_answer)
-
-            except Exception:
-                full_answer = (
-                    "Something went wrong while retrieving the answer.\n\n"
-                    "📎 https://docs.digit.org/studio"
+            # STEP 2: Domain check
+            if not is_domain_query(query):
+                answer = (
+                    "This assistant is designed to answer questions about DIGIT Studio.\n\n"
+                    "I may not be able to help with general knowledge questions like this.\n\n"
+                    "📎 Try asking about workflows, services, configuration, or DIGIT Studio features."
                 )
-                container.markdown(full_answer)
+                st.markdown(answer)
+                source = "fallback"
+                qa_id = None
 
-            answer = full_answer
-            source = "rag"
-            qa_id = None
+            else:
+                # STEP 3: RAG
+                full_answer = ""
+                container = st.empty()
 
-        # STEP 3: Feedback
+                try:
+                    has_content = False
+
+                    for chunk in stream_rag_pipeline(
+                        query=query,
+                        hybrid_retrieve_pg=hybrid_retrieve_pg,
+                        top_k=5,
+                        model="gpt-4",
+                        history=st.session_state.history
+                    ):
+                        has_content = True
+                        full_answer += chunk
+                        container.markdown(full_answer + "▌")
+
+                    if not has_content or "I don't have enough information" in full_answer:
+                        full_answer = (
+                            "I couldn't find a clear answer in DIGIT Studio documentation.\n\n"
+                            "📎 Try rephrasing your question or be more specific."
+                        )
+
+                    container.markdown(full_answer)
+
+                except Exception:
+                    full_answer = "Something went wrong. Please try again."
+                    container.markdown(full_answer)
+
+                answer = full_answer
+                source = "rag"
+                qa_id = None
+
+        # STEP 4: Feedback
         st.divider()
         col1, col2 = st.columns(2)
 
