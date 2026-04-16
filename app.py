@@ -57,7 +57,7 @@ _ensure_qa_table()
 
 
 # ─────────────────────────────────────────────
-# Predetermined answer logic (FIXED)
+# Predetermined answer logic
 # ─────────────────────────────────────────────
 def get_predetermined_answer(query: str, threshold: float = 0.85):
     conn = get_conn()
@@ -72,7 +72,7 @@ def get_predetermined_answer(query: str, threshold: float = 0.85):
 
         q_words = set(w for w in query.lower().split() if len(w) > 3)
 
-        # 🚨 Domain filter
+        # Domain filter
         if not any(word in query.lower() for word in ["digit", "studio", "service", "workflow", "api", "config"]):
             return None
 
@@ -181,12 +181,10 @@ for msg in st.session_state.messages:
 query = st.chat_input("Ask a question...")
 
 if query:
-    # Show user message
     st.session_state.messages.append({"role": "user", "content": query})
     with st.chat_message("user"):
         st.markdown(query)
 
-    # Assistant response
     with st.chat_message("assistant"):
 
         # STEP 1: Cache
@@ -206,6 +204,8 @@ if query:
             container = st.empty()
 
             try:
+                has_content = False
+
                 for chunk in stream_rag_pipeline(
                     query=query,
                     hybrid_retrieve_pg=hybrid_retrieve_pg,
@@ -213,15 +213,28 @@ if query:
                     model="gpt-4",
                     history=st.session_state.history
                 ):
+                    has_content = True
                     full_answer += chunk
                     container.markdown(full_answer + "▌")
+
+                # Fallback if no useful answer
+                if not has_content or "I don't have enough information" in full_answer:
+                    full_answer = (
+                        "This assistant is designed to answer questions about DIGIT Studio.\n\n"
+                        "I may not be able to help with general knowledge questions like this.\n\n"
+                        "📎 Try asking about:\n"
+                        "- Services\n"
+                        "- Workflows\n"
+                        "- Configuration\n"
+                        "- DIGIT Studio features"
+                    )
 
                 container.markdown(full_answer)
 
             except Exception as e:
                 full_answer = (
-                    "I couldn't find an exact answer, but here's a best attempt:\n\n"
-                    f"{e}\n\n📎 https://docs.digit.org/studio"
+                    "Something went wrong while retrieving the answer.\n\n"
+                    "📎 https://docs.digit.org/studio"
                 )
                 container.markdown(full_answer)
 
@@ -239,7 +252,6 @@ if query:
 
                 if source == "predetermined" and qa_id:
                     update_qa_confidence(qa_id, True)
-
                 elif source == "rag":
                     promote_to_cache(query, answer)
 
@@ -254,7 +266,6 @@ if query:
 
                 st.info("Feedback noted")
 
-    # Save history
     st.session_state.messages.append({"role": "assistant", "content": answer})
     st.session_state.history.append({"role": "user", "content": query})
     st.session_state.history.append({"role": "assistant", "content": answer})
