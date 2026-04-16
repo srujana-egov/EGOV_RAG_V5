@@ -29,34 +29,38 @@ def ingest(file_path):
 
     print(f"Ingesting {len(lines)} chunks...")
 
-    with conn.cursor() as cur:
-        for i, line in enumerate(lines):
-            chunk = json.loads(line)
+    try:
+        with conn.cursor() as cur:
+            for i, line in enumerate(lines):
+                chunk = json.loads(line)
 
-            try:
-                emb = get_embedding(chunk["document"])
+                try:
+                    emb = get_embedding(chunk["document"])
 
-                cur.execute(f"""
-                    INSERT INTO {TABLE} (id, document, embedding, url, tag, version)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO NOTHING
-                """, (
-                    chunk["id"],
-                    chunk["document"],
-                    emb,
-                    chunk.get("url"),
-                    chunk.get("tag"),
-                    chunk.get("version")
-                ))
+                    cur.execute(f"""
+                        INSERT INTO {TABLE} (id, document, embedding, url, tag, version)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                    """, (
+                        chunk["id"],
+                        chunk["document"],
+                        emb,
+                        chunk.get("url"),
+                        chunk.get("tag"),
+                        chunk.get("version")
+                    ))
 
-                if i % 5 == 0:
-                    print(f"Inserted {i+1}/{len(lines)}")
+                    if i % 5 == 0:
+                        print(f"Inserted {i+1}/{len(lines)}")
 
-            except Exception as e:
-                print(f"❌ Failed at chunk {i}: {e}")
+                except Exception as e:
+                    print(f"❌ Failed at chunk {i}: {e}")
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+
+    finally:
+        conn.close()
+
     print("✅ Ingestion complete!")
 
 
