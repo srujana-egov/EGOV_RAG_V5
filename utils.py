@@ -9,11 +9,9 @@ load_dotenv()
 
 try:
     import psycopg2
-    from psycopg2 import pool
     from pgvector.psycopg2 import register_vector
 except ImportError:
     psycopg2 = None
-    pool = None
 
 try:
     import streamlit as st
@@ -35,75 +33,51 @@ def get_env_var(key: str, default=None):
 
 
 # ─────────────────────────────────────────────
-# Connection pool
+# SIMPLE CONNECTION (NO POOL — FIXES YOUR ISSUE)
 # ─────────────────────────────────────────────
-_pool = None
-
-def _get_pool():
-    global _pool
-    if _pool is None:
-        _pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=1,
-            maxconn=10,
-            dbname=get_env_var("PGDATABASE"),
-            user=get_env_var("PGUSER"),
-            password=get_env_var("PGPASSWORD"),
-            host=get_env_var("PGHOST"),
-            port=get_env_var("PGPORT", "5432"),
-            sslmode=get_env_var("PGSSLMODE", "require")
-        )
-    return _pool
-
-
 def get_conn():
-    p = _get_pool()
-    conn = p.getconn()
+    conn = psycopg2.connect(
+        dbname=get_env_var("PGDATABASE"),
+        user=get_env_var("PGUSER"),
+        password=get_env_var("PGPASSWORD"),
+        host=get_env_var("PGHOST"),
+        port=get_env_var("PGPORT", "5432"),
+        sslmode="require",
+        connect_timeout=5
+    )
     register_vector(conn)
     return conn
 
 
-def release_conn(conn):
-    try:
-        _get_pool().putconn(conn)
-    except Exception:
-        pass
-
-
 # ─────────────────────────────────────────────
-# Ensure feedback table exists (run once on startup)
+# Ensure feedback table exists
 # ─────────────────────────────────────────────
 def ensure_feedback_table():
-    """Creates the feedback table if it doesn't exist."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bot_feedback (
-                    id          SERIAL PRIMARY KEY,
-                    created_at  TIMESTAMPTZ DEFAULT NOW(),
-                    query       TEXT,
+                    id SERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    query TEXT,
                     answer_snippet TEXT,
-                    rating      VARCHAR(10),   -- 'positive' or 'negative'
-                    source      VARCHAR(20),   -- 'predetermined' or 'rag'
-                    comment     TEXT
+                    rating VARCHAR(10),
+                    source VARCHAR(20),
+                    comment TEXT
                 )
             """)
         conn.commit()
     except Exception as e:
         print(f"[DB] Could not create feedback table: {e}")
     finally:
-        release_conn(conn)
+        conn.close()
 
 
 # ─────────────────────────────────────────────
-# Log feedback to DB (not a flat file)
+# Feedback logging
 # ─────────────────────────────────────────────
 def log_feedback(query: str, answer: str, rating: str, source: str = "rag", comment: str = ""):
-    """
-    Persists user feedback to the database.
-    rating: 'positive' | 'negative'
-    source: 'predetermined' | 'rag'
-    """
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -112,17 +86,15 @@ def log_feedback(query: str, answer: str, rating: str, source: str = "rag", comm
                 VALUES (%s, %s, %s, %s, %s)
             """, (query, answer[:500], rating, source, comment))
         conn.commit()
-        print(f"[Feedback] {rating} logged for: '{query[:60]}'")
+        print(f"[Feedback] {rating} logged")
     except Exception as e:
         print(f"[Feedback] DB log failed: {e}")
-        # Fallback to file so feedback is never silently lost
         _log_feedback_file(query, answer, rating, source, comment)
     finally:
-        release_conn(conn)
+        conn.close()
 
 
 def _log_feedback_file(query: str, answer: str, rating: str, source: str, comment: str):
-    """Fallback file logger in case DB is unavailable."""
     record = {
         "timestamp": datetime.datetime.utcnow().isoformat(),
         "query": query,
@@ -136,7 +108,7 @@ def _log_feedback_file(query: str, answer: str, rating: str, source: str, commen
 
 
 # ─────────────────────────────────────────────
-# Fetch feedback for admin dashboard
+# Fetch feedback
 # ─────────────────────────────────────────────
 def get_recent_feedback(limit: int = 50) -> list:
     conn = get_conn()
@@ -157,7 +129,7 @@ def get_recent_feedback(limit: int = 50) -> list:
         print(f"[Feedback] Fetch failed: {e}")
         return []
     finally:
-        release_conn(conn)
+        conn.close()
 
 
 def get_feedback_stats() -> dict:
@@ -187,11 +159,11 @@ def get_feedback_stats() -> dict:
         print(f"[Feedback] Stats failed: {e}")
         return {}
     finally:
-        release_conn(conn)
+        conn.close()
 
 
 # ─────────────────────────────────────────────
-# Chunk insert helper
+# Insert chunk
 # ─────────────────────────────────────────────
 def insert_chunk(doc_id: str, text: str, metadata: dict, get_embedding, table: str = "studio_manual"):
     emb = get_embedding(text)
@@ -202,15 +174,15 @@ def insert_chunk(doc_id: str, text: str, metadata: dict, get_embedding, table: s
                 INSERT INTO {table} (id, document, embedding, url, tag, version)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE SET
-                    document  = EXCLUDED.document,
+                    document = EXCLUDED.document,
                     embedding = EXCLUDED.embedding,
-                    url       = EXCLUDED.url,
-                    tag       = EXCLUDED.tag,
-                    version   = EXCLUDED.version
+                    url = EXCLUDED.url,
+                    tag = EXCLUDED.tag,
+                    version = EXCLUDED.version
             """, (doc_id, text, emb, metadata.get("url"), metadata.get("tag"), metadata.get("version")))
         conn.commit()
     finally:
-        release_conn(conn)
+        conn.close()
 
 
 # ─────────────────────────────────────────────
