@@ -57,7 +57,7 @@ _ensure_qa_table()
 
 
 # ─────────────────────────────────────────────
-# Predetermined answer logic
+# Predetermined answer logic (FIXED)
 # ─────────────────────────────────────────────
 def get_predetermined_answer(query: str, threshold: float = 0.85):
     conn = get_conn()
@@ -72,10 +72,6 @@ def get_predetermined_answer(query: str, threshold: float = 0.85):
 
         q_words = set(w for w in query.lower().split() if len(w) > 3)
 
-        # Domain filter
-        if not any(word in query.lower() for word in ["digit", "studio", "service", "workflow", "api", "config"]):
-            return None
-
         best_match = None
         best_score = 0.0
 
@@ -87,6 +83,7 @@ def get_predetermined_answer(query: str, threshold: float = 0.85):
 
             common_words = q_words & p_words
 
+            # require at least 2 meaningful words
             if len(common_words) < 2:
                 continue
 
@@ -217,21 +214,20 @@ if query:
                     full_answer += chunk
                     container.markdown(full_answer + "▌")
 
-                # Fallback if no useful answer
+                # fallback only if RAG failed
                 if not has_content or "I don't have enough information" in full_answer:
                     full_answer = (
-                        "This assistant is designed to answer questions about DIGIT Studio.\n\n"
-                        "I may not be able to help with general knowledge questions like this.\n\n"
-                        "📎 Try asking about:\n"
-                        "- Services\n"
-                        "- Workflows\n"
-                        "- Configuration\n"
-                        "- DIGIT Studio features"
+                        "I couldn't find a clear answer in DIGIT Studio documentation.\n\n"
+                        "📎 Try rephrasing your question or be more specific.\n\n"
+                        "Examples:\n"
+                        "- How to configure workflows?\n"
+                        "- How does authentication work in DIGIT?\n"
+                        "- How to deploy services?"
                     )
 
                 container.markdown(full_answer)
 
-            except Exception as e:
+            except Exception:
                 full_answer = (
                     "Something went wrong while retrieving the answer.\n\n"
                     "📎 https://docs.digit.org/studio"
