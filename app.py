@@ -72,25 +72,35 @@ def get_predetermined_answer(query: str, threshold: float = 0.85):
 
         q_words = set(w for w in query.lower().split() if len(w) > 3)
 
-        best_match = None
-        best_score = 0.0
+# 🚨 Domain filter (prevents nonsense matches)
+if not any(word in query.lower() for word in ["digit", "studio", "service", "workflow", "api", "config"]):
+    return None
 
-        for row_id, question, answer, confidence in rows:
-            p_words = set(w for w in question.lower().split() if len(w) > 3)
+best_match = None
+best_score = 0.0
 
-            if not q_words or not p_words:
-                continue
+for row_id, question, answer, confidence in rows:
+    p_words = set(w for w in question.lower().split() if len(w) > 3)
 
-            overlap = len(q_words & p_words) / len(q_words)
+    if not q_words or not p_words:
+        continue
 
-            if overlap >= 0.3 and overlap > best_score:
-                best_score = overlap
-                best_match = {
-                    "id": row_id,
-                    "answer": answer,
-                    "confidence": confidence,
-                    "overlap": overlap
-                }
+    common_words = q_words & p_words
+
+    # Require at least 2 meaningful words
+    if len(common_words) < 2:
+        continue
+
+    overlap = len(common_words) / len(q_words)
+
+    if overlap >= 0.5 and overlap > best_score:
+        best_score = overlap
+        best_match = {
+            "id": row_id,
+            "answer": answer,
+            "confidence": confidence,
+            "overlap": overlap
+        }
 
         return best_match
 
