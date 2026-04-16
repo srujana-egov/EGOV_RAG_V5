@@ -1,16 +1,3 @@
-"""
-setup_studio_data.py
-====================
-Run this ONCE to:
-1. Clear old Health/HCM data from the vector table
-2. Create the predetermined_qa table
-3. Load all Studio Q&A pairs into predetermined_qa (instant answers, no RAG needed)
-4. Generate a studio_chunks.jsonl for vector ingestion
-
-Run with:
-    python setup_studio_data.py
-"""
-
 import os
 import json
 import sys
@@ -25,8 +12,10 @@ except ImportError:
     print("❌ Missing psycopg2 or pgvector. Run: pip install psycopg2-binary pgvector")
     sys.exit(1)
 
+
 # ─────────────────────────────────────────────
-# Studio Q&A data (your predetermined answers)
+# Studio Q&A data
+# (kept short here — keep your full list)
 # ─────────────────────────────────────────────
 STUDIO_QA = [
     {
@@ -519,7 +508,9 @@ Traditional low-code tools focus on generic apps. DIGIT Studio focuses on standa
     },
 ]
 
-
+# ─────────────────────────────────────────────
+# DB Connection
+# ─────────────────────────────────────────────
 def get_conn():
     return psycopg2.connect(
         dbname=os.getenv("PGDATABASE"),
@@ -531,73 +522,94 @@ def get_conn():
     )
 
 
+# ─────────────────────────────────────────────
+# Safe DB Helpers
+# ─────────────────────────────────────────────
 def clear_health_data(conn, table="studio_manual"):
-    """Remove all old Health/HCM data from the vector table."""
+    """Safely clear old data if table exists."""
     with conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {table}")
-        count = cur.fetchone()[0]
-        print(f"Found {count} rows in {table}")
-        cur.execute(f"DELETE FROM {table}")
-        print(f"✅ Cleared {count} rows from {table}")
-    conn.commit()
+        try:
+            cur.execute(f"SELECT COUNT(*) FROM {table}")
+            count = cur.fetchone()[0]
+            print(f"Found {count} rows in {table}")
+
+            cur.execute(f"DELETE FROM {table}")
+            print(f"✅ Cleared {count} rows from {table}")
+
+            conn.commit()
+
+        except Exception as e:
+            conn.rollback()  # 🔥 critical fix
+            print(f"   Note: {e} (table may not exist yet, that's ok)")
 
 
 def create_tables(conn):
-    """Ensure all required tables exist."""
+    """Create required tables safely."""
     with conn.cursor() as cur:
-        # Feedback table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS bot_feedback (
-                id          SERIAL PRIMARY KEY,
-                created_at  TIMESTAMPTZ DEFAULT NOW(),
-                query       TEXT,
-                answer_snippet TEXT,
-                rating      VARCHAR(10),
-                source      VARCHAR(20),
-                comment     TEXT
-            )
-        """)
-        # Predetermined Q&A table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS predetermined_qa (
-                id              SERIAL PRIMARY KEY,
-                question        TEXT NOT NULL,
-                answer          TEXT NOT NULL,
-                confidence      FLOAT DEFAULT 1.0,
-                positive_votes  INT DEFAULT 0,
-                negative_votes  INT DEFAULT 0,
-                source          VARCHAR(20) DEFAULT 'manual',
-                created_at      TIMESTAMPTZ DEFAULT NOW(),
-                updated_at      TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-    conn.commit()
-    print("✅ Tables created/verified")
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_feedback (
+                    id SERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    query TEXT,
+                    answer_snippet TEXT,
+                    rating VARCHAR(10),
+                    source VARCHAR(20),
+                    comment TEXT
+                )
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS predetermined_qa (
+                    id SERIAL PRIMARY KEY,
+                    question TEXT NOT NULL,
+                    answer TEXT NOT NULL,
+                    confidence FLOAT DEFAULT 1.0,
+                    positive_votes INT DEFAULT 0,
+                    negative_votes INT DEFAULT 0,
+                    source VARCHAR(20) DEFAULT 'manual',
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+            conn.commit()
+            print("✅ Tables created/verified")
+
+        except Exception as e:
+            conn.rollback()
+            raise e
 
 
 def load_qa_cache(conn):
-    """Load all Studio Q&A pairs into predetermined_qa."""
+    """Load Q&A safely."""
     with conn.cursor() as cur:
-        # Clear existing entries first
-        cur.execute("DELETE FROM predetermined_qa")
-        print("Cleared existing Q&A cache")
+        try:
+            # Faster + safer reset
+            cur.execute("TRUNCATE predetermined_qa")
+            print("Cleared existing Q&A cache")
 
-        for qa in STUDIO_QA:
-            cur.execute("""
-                INSERT INTO predetermined_qa (question, answer, confidence, source)
-                VALUES (%s, %s, %s, %s)
-            """, (qa["question"], qa["answer"], 1.0, "manual"))
+            for qa in STUDIO_QA:
+                cur.execute("""
+                    INSERT INTO predetermined_qa (question, answer, confidence, source)
+                    VALUES (%s, %s, %s, %s)
+                """, (qa["question"], qa["answer"], 1.0, "manual"))
 
-    conn.commit()
-    print(f"✅ Loaded {len(STUDIO_QA)} Studio Q&A pairs into predetermined_qa")
+            conn.commit()
+            print(f"✅ Loaded {len(STUDIO_QA)} Q&A pairs")
+
+        except Exception as e:
+            conn.rollback()
+            raise e
 
 
 def generate_studio_jsonl():
-    """Generate studio_chunks.jsonl from the Q&A data for vector ingestion."""
+    """Generate JSONL for vector ingestion."""
     chunks = []
+
     for i, qa in enumerate(STUDIO_QA):
-        # Combine question + answer as a chunk for vector search
         combined = f"Q: {qa['question']}\n\nA: {qa['answer']}"
+
         chunks.append({
             "id": f"studio_qa/{i:03d}",
             "title": qa["question"][:80],
@@ -609,48 +621,42 @@ def generate_studio_jsonl():
 
     os.makedirs("data", exist_ok=True)
     output_path = os.path.join("data", "studio_chunks.jsonl")
+
     with open(output_path, "w", encoding="utf-8") as f:
         for chunk in chunks:
             f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
 
     print(f"✅ Generated {output_path} with {len(chunks)} chunks")
-    print(f"   Run: python ingest_simple.py --file data/studio_chunks.jsonl")
     return output_path
 
 
+# ─────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────
 def main():
     print("=" * 50)
     print("DIGIT Studio — Data Setup")
     print("=" * 50)
 
     conn = get_conn()
+
     try:
         register_vector(conn)
 
-        # 1. Create tables
         print("\n1. Creating tables...")
         create_tables(conn)
 
-        # 2. Clear old Health data
         print("\n2. Clearing old Health/HCM data...")
-        try:
-            clear_health_data(conn, table=os.getenv("DB_TABLE", "studio_manual"))
-        except Exception as e:
-            print(f"   Note: {e} (table may not exist yet, that's ok)")
+        clear_health_data(conn, table=os.getenv("DB_TABLE", "studio_manual"))
 
-        # 3. Load Studio Q&A into cache
-        print("\n3. Loading Studio Q&A into predetermined cache...")
+        print("\n3. Loading Studio Q&A...")
         load_qa_cache(conn)
 
-        # 4. Generate JSONL for vector ingestion
-        print("\n4. Generating studio_chunks.jsonl...")
+        print("\n4. Generating JSONL...")
         generate_studio_jsonl()
 
         print("\n" + "=" * 50)
         print("✅ Setup complete!")
-        print("\nNext steps:")
-        print("  1. Run: python ingest_simple.py --file data/studio_chunks.jsonl")
-        print("  2. Run: streamlit run app.py")
         print("=" * 50)
 
     finally:
