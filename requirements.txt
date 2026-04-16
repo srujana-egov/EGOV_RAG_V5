@@ -1,25 +1,20 @@
-langchain
-openai
-langchain-openai
-langchain-experimental
-slack_sdk
-nltk
-rouge
-PyPDF2
-pymupdf
-psycopg2-binary
-pgvector
-tiktoken
-python-dotenv
-backoff
-sentence-transformers 
-faiss-cpu 
-rank_bm25
-PyMuPDF
-bs4
-sacrebleu
-rouge_score
-bert_score
-pytesseract
-pdf2image
-markdown
+# Core
+streamlit>=1.35.0
+openai>=1.30.0
+cohere>=5.0.0
+
+# Database
+psycopg2-binary>=2.9.9
+pgvector>=0.2.4
+
+# Utilities
+python-dotenv>=1.0.0
+tiktoken>=0.7.0
+
+# Document ingestion (for ingest_simple.py)
+tqdm>=4.66.0
+
+# Document parsing (for the ingestion console)
+PyPDF2>=3.0.1
+pandas>=2.0.0
+openpyxl>=3.1.0
