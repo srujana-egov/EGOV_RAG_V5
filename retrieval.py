@@ -19,7 +19,7 @@ def get_embedding(text: str) -> List[float]:
 
 
 # ─────────────────────────────────────────────
-# Retrieval (NO rewrite here anymore)
+# Retrieval
 # ─────────────────────────────────────────────
 def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
     conn = get_conn()
@@ -29,7 +29,7 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
             query_embedding = get_embedding(query)
 
             cur.execute(f"""
-                SELECT id, document, url,
+                SELECT document, url,
                        (1 - (embedding <=> %s::vector)) AS score
                 FROM {TABLE}
                 ORDER BY embedding <=> %s::vector
@@ -38,14 +38,10 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
 
             rows = cur.fetchall()
 
-            results = []
-            for row in rows:
-                results.append((
-                    row[1],
-                    {"url": row[2], "score": row[3]}
-                ))
-
-            return results
+            return [
+                (row[0], {"url": row[1], "score": row[2]})
+                for row in rows
+            ]
 
     finally:
         conn.close()
