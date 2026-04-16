@@ -10,6 +10,7 @@ from retrieval import hybrid_retrieve_pg
 
 from utils import (
     get_conn,
+    get_env_var,
     log_feedback,
     log_query,
     ensure_feedback_table,
