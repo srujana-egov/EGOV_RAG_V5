@@ -5,7 +5,7 @@ import openai
 load_dotenv()
 
 # ─────────────────────────────────────────────
-# Single OpenAI client — not recreated per query
+# Single OpenAI client
 # ─────────────────────────────────────────────
 _client = None
 
@@ -20,12 +20,31 @@ def _get_client() -> openai.OpenAI:
 
 
 # ─────────────────────────────────────────────
-# Query rewriting — uses gpt-3.5-turbo (10x cheaper, same quality for this task)
+# Domain detection threshold
+# ─────────────────────────────────────────────
+OUT_OF_DOMAIN_THRESHOLD = 0.35  # cosine similarity below this = out of DIGIT Studio domain
+
+OUT_OF_DOMAIN_MSG = (
+    "I'm sorry, that question appears to be outside the scope of DIGIT Studio documentation.\n\n"
+    "I can only answer questions related to **DIGIT Studio** — eGovernments Foundation's platform "
+    "for building digital public services.\n\n"
+    "**Topics I can help with:**\n"
+    "- Building services, forms, workflows, and checklists\n"
+    "- Roles, permissions, and user management\n"
+    "- Notifications (SMS/email), documents, and integrations\n"
+    "- Deployment, environments, and configuration\n"
+    "- Citizen and employee app behaviour\n\n"
+    "Please ask a question related to DIGIT Studio."
+)
+
+
+# ─────────────────────────────────────────────
+# Query rewriting (gpt-3.5-turbo — cheaper, fine for this task)
 # ─────────────────────────────────────────────
 def rewrite_query(query: str) -> str:
     try:
         response = _get_client().chat.completions.create(
-            model="gpt-3.5-turbo",   # ← was gpt-4, same quality for rewriting, 10x cheaper
+            model="gpt-3.5-turbo",
             messages=[
                 {
                     "role": "system",
@@ -50,7 +69,7 @@ def rewrite_query(query: str) -> str:
 
 
 # ─────────────────────────────────────────────
-# Build messages list (shared between streaming and non-streaming)
+# System prompt
 # ─────────────────────────────────────────────
 SYSTEM_PROMPT = """You are a helpful assistant for DIGIT Studio — a low-code platform for building government digital services.
 
@@ -79,7 +98,7 @@ def _build_messages(query: str, docs: list, history: list = None) -> list:
 
 
 # ─────────────────────────────────────────────
-# Non-streaming answer (used as fallback)
+# Non-streaming answer (fallback)
 # ─────────────────────────────────────────────
 def chat_with_assistant(query: str, docs: list, history: list = None, model: str = "gpt-4") -> str:
     messages = _build_messages(query, docs, history)
@@ -93,7 +112,7 @@ def chat_with_assistant(query: str, docs: list, history: list = None, model: str
 
 
 # ─────────────────────────────────────────────
-# Streaming answer — yields chunks as they arrive
+# Streaming answer
 # ─────────────────────────────────────────────
 def stream_rag_answer(query: str, docs: list, history: list = None, model: str = "gpt-4"):
     messages = _build_messages(query, docs, history)
@@ -109,8 +128,10 @@ def stream_rag_answer(query: str, docs: list, history: list = None, model: str =
                 delta = event.delta
                 if delta and "content" in delta:
                     yield delta["content"]
+
+
 # ─────────────────────────────────────────────
-# Full RAG pipeline (non-streaming, for internal use)
+# Full RAG pipeline (non-streaming)
 # ─────────────────────────────────────────────
 def generate_rag_answer(
     query: str,
@@ -123,10 +144,11 @@ def generate_rag_answer(
     docs_and_meta = hybrid_retrieve_pg(rewritten, top_k)
 
     if not docs_and_meta:
-        return (
-            "I don't have enough information in the knowledge base to answer that.\n\n"
-            "📎 Please check the DIGIT Studio documentation: https://docs.digit.org/studio"
-        )
+        return OUT_OF_DOMAIN_MSG
+
+    max_score = max(meta.get("score", 0) for _, meta in docs_and_meta)
+    if max_score < OUT_OF_DOMAIN_THRESHOLD:
+        return OUT_OF_DOMAIN_MSG
 
     docs = []
     for i, (doc, meta) in enumerate(docs_and_meta, start=1):
@@ -136,7 +158,7 @@ def generate_rag_answer(
 
 
 # ─────────────────────────────────────────────
-# Full RAG pipeline (streaming version for app.py)
+# Full RAG pipeline (streaming, used by app.py)
 # ─────────────────────────────────────────────
 def stream_rag_pipeline(
     query: str,
@@ -146,14 +168,23 @@ def stream_rag_pipeline(
     history: list = None
 ):
     """
-    Generator: rewrites query, retrieves docs, then streams the answer.
-    Yields either str chunks or a special {"type": "no_results"} dict.
+    Generator that rewrites query, retrieves docs, checks domain, then streams the answer.
+    Yields str chunks. If out-of-domain, yields the OUT_OF_DOMAIN_MSG as a single chunk.
     """
     rewritten = rewrite_query(query)
     docs_and_meta = hybrid_retrieve_pg(rewritten, top_k)
 
+    # No results at all → out of domain
     if not docs_and_meta:
-        yield "I don't have enough information in the knowledge base to answer that.\n\n📎 Please check the DIGIT Studio documentation: https://docs.digit.org/studio"
+        yield OUT_OF_DOMAIN_MSG
+        return
+
+    # Check best similarity score
+    max_score = max(meta.get("score", 0) for _, meta in docs_and_meta)
+    print(f"[Domain] Max retrieval score: {max_score:.3f} (threshold={OUT_OF_DOMAIN_THRESHOLD})")
+
+    if max_score < OUT_OF_DOMAIN_THRESHOLD:
+        yield OUT_OF_DOMAIN_MSG
         return
 
     docs = []

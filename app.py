@@ -3,13 +3,15 @@ DIGIT Studio Support Bot
 """
 
 import streamlit as st
-from generator import stream_rag_pipeline
+from generator import stream_rag_pipeline, OUT_OF_DOMAIN_MSG
 from retrieval import hybrid_retrieve_pg
 
 from utils import (
     get_conn,
     log_feedback,
-    ensure_feedback_table
+    ensure_feedback_table,
+    ensure_qa_table_full,
+    update_qa_votes_and_promote,
 )
 
 # ─────────────────────────────────────────────
@@ -17,77 +19,82 @@ from utils import (
 # ─────────────────────────────────────────────
 st.set_page_config(page_title="DIGIT Studio Assistant", page_icon="🛠️", layout="wide")
 
+# Ensure DB tables exist
 try:
     ensure_feedback_table()
+    ensure_qa_table_full()
 except Exception:
     pass
 
 
 # ─────────────────────────────────────────────
-# Ensure Q&A table
+# Predetermined Q&A matching
 # ─────────────────────────────────────────────
-def _ensure_qa_table():
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS predetermined_qa (
-                    id SERIAL PRIMARY KEY,
-                    question TEXT NOT NULL,
-                    answer TEXT NOT NULL,
-                    confidence FLOAT DEFAULT 1.0
-                )
-            """)
-        conn.commit()
-    finally:
-        conn.close()
+
+# Common English stop words to ignore when matching
+_STOP_WORDS = {
+    "what", "when", "where", "which", "that", "this", "with", "from",
+    "have", "does", "will", "can", "how", "why", "who", "are", "the",
+    "and", "for", "not", "your", "my", "do", "is", "in", "an", "a",
+    "to", "of", "on", "at", "by", "or", "be", "it", "as", "up",
+    "about", "into", "after", "before", "during", "while", "there",
+}
 
 
-_ensure_qa_table()
-
-
-# ─────────────────────────────────────────────
-# Cache logic (FIXED)
-# ─────────────────────────────────────────────
 def get_predetermined_answer(query: str):
+    """
+    Match query against predetermined Q&A cache.
+    Returns the best match dict if confident (>= 50% query coverage),
+    or None to fall through to RAG.
+    """
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, question, answer FROM predetermined_qa")
+            cur.execute("SELECT id, question, answer, confidence FROM predetermined_qa")
             rows = cur.fetchall()
 
         q = query.strip().lower()
-        q_words = set(w for w in q.split() if len(w) > 3)
+        q_words = set(
+            w for w in q.split()
+            if len(w) >= 3 and w not in _STOP_WORDS
+        )
+
+        if not q_words:
+            return None
 
         best_match = None
         best_score = 0.0
 
-        for row_id, question, answer in rows:
+        for row_id, question, answer, confidence in rows:
             p = question.strip().lower()
 
-            # ✅ EXACT MATCH
+            # Exact match → return immediately with full confidence
             if q == p:
-                return {
-                    "id": row_id,
-                    "answer": answer,
-                    "confidence": 1.0
-                }
+                return {"id": row_id, "answer": answer, "confidence": 1.0}
 
-            p_words = set(w for w in p.split() if len(w) > 3)
-
-            common = q_words & p_words
-
-            if len(common) < 1:
+            p_words = set(
+                w for w in p.split()
+                if len(w) >= 3 and w not in _STOP_WORDS
+            )
+            if not p_words:
                 continue
 
-            overlap = len(common) / len(q_words)
+            common = q_words & p_words
+            if not common:
+                continue
 
-            if overlap >= 0.3 and overlap > best_score:
-                best_score = overlap
+            # Coverage = what fraction of the query's key words appear in the question
+            query_coverage = len(common) / len(q_words)
+
+            # Require >= 50% coverage to be a "sure" match
+            if query_coverage >= 0.5 and query_coverage > best_score:
+                best_score = query_coverage
+                # Use the lower of DB confidence and match score
+                effective_confidence = min(float(confidence or 1.0), query_coverage)
                 best_match = {
                     "id": row_id,
                     "answer": answer,
-                    "confidence": overlap
+                    "confidence": effective_confidence,
                 }
 
         return best_match
@@ -97,90 +104,131 @@ def get_predetermined_answer(query: str):
 
 
 # ─────────────────────────────────────────────
-# Session
+# Session state init
 # ─────────────────────────────────────────────
 if "history" not in st.session_state:
-    st.session_state.history = []
+    st.session_state.history = []   # sent to LLM for context
 
 if "messages" not in st.session_state:
+    # Each assistant message also stores: query, source, feedback
     st.session_state.messages = []
 
 
 # ─────────────────────────────────────────────
-# UI
+# UI header
 # ─────────────────────────────────────────────
 st.title("🛠️ DIGIT Studio Assistant")
-st.caption("Ask anything about DIGIT Studio")
+st.caption(
+    "Ask anything about DIGIT Studio  •  "
+    "Conversation is remembered within this session  •  "
+    "⚡ = instant cached answer"
+)
 
-for msg in st.session_state.messages:
+# ─────────────────────────────────────────────
+# Render conversation history with feedback buttons
+# ─────────────────────────────────────────────
+for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-query = st.chat_input("Ask a question...")
+        if msg["role"] == "assistant":
+            source = msg.get("source", "rag")
+
+            # Source badge
+            if source == "cache":
+                st.caption("⚡ Instant answer")
+
+            # Feedback buttons — only for cache/rag answers, not out-of-domain
+            if source in ("cache", "rag"):
+                fb = msg.get("feedback")
+                if fb is None:
+                    col1, col2, _ = st.columns([1, 1, 8])
+                    with col1:
+                        if st.button("👍", key=f"up_{i}", help="This was helpful"):
+                            log_feedback(
+                                msg.get("query", ""), msg["content"],
+                                "positive", source
+                            )
+                            update_qa_votes_and_promote(
+                                msg.get("query", ""), msg["content"], "positive"
+                            )
+                            st.session_state.messages[i]["feedback"] = "positive"
+                            st.rerun()
+                    with col2:
+                        if st.button("👎", key=f"down_{i}", help="This wasn't helpful"):
+                            log_feedback(
+                                msg.get("query", ""), msg["content"],
+                                "negative", source
+                            )
+                            st.session_state.messages[i]["feedback"] = "negative"
+                            st.rerun()
+                else:
+                    st.caption("👍 Thanks!" if fb == "positive" else "👎 Noted — flagged for review")
+
+
+# ─────────────────────────────────────────────
+# New query input
+# ─────────────────────────────────────────────
+query = st.chat_input("Ask a question about DIGIT Studio...")
 
 if query:
+    # Append user message
     st.session_state.messages.append({"role": "user", "content": query})
+    st.session_state.history.append({"role": "user", "content": query})
 
     with st.chat_message("user"):
         st.markdown(query)
 
     with st.chat_message("assistant"):
 
-        # STEP 1: Cache
+        # ── STEP 1: Predetermined Q&A cache ──
         cached = get_predetermined_answer(query)
 
         if cached:
             answer = cached["answer"]
             source = "cache"
-
             st.markdown(answer)
             st.caption("⚡ Instant answer")
 
         else:
-            # STEP 2: RAG
+            # ── STEP 2: RAG pipeline ──
             full_answer = ""
+            source = "rag"
             container = st.empty()
 
             try:
-                has_content = False
-
                 for chunk in stream_rag_pipeline(
                     query=query,
                     hybrid_retrieve_pg=hybrid_retrieve_pg,
                     top_k=5,
                     model="gpt-4",
-                    history=st.session_state.history
+                    history=st.session_state.history,
                 ):
-                    has_content = True
                     full_answer += chunk
                     container.markdown(full_answer + "▌")
 
-                if not has_content or "I don't have enough information" in full_answer:
-                    full_answer = (
-                        "I couldn't find a clear answer in DIGIT Studio documentation.\n\n"
-                        "Try rephrasing your question."
-                    )
+                # Detect out-of-domain response
+                if full_answer.strip() == OUT_OF_DOMAIN_MSG.strip():
+                    source = "out_of_domain"
 
                 container.markdown(full_answer)
 
-            except Exception:
+            except Exception as e:
                 full_answer = "Something went wrong. Please try again."
+                source = "error"
                 container.markdown(full_answer)
 
             answer = full_answer
-            source = "rag"
 
-        # Feedback
-        st.divider()
-
-        if st.button("👍"):
-            log_feedback(query, answer, "positive", source)
-            st.success("Thanks!")
-
-        if st.button("👎"):
-            log_feedback(query, answer, "negative", source)
-            st.info("Feedback noted")
-
-    st.session_state.messages.append({"role": "assistant", "content": answer})
-    st.session_state.history.append({"role": "user", "content": query})
+    # Append assistant message with metadata for feedback buttons
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": answer,
+        "query": query,
+        "source": source,
+        "feedback": None,
+    })
     st.session_state.history.append({"role": "assistant", "content": answer})
+
+    # Rerun so feedback buttons appear via the main message loop
+    st.rerun()

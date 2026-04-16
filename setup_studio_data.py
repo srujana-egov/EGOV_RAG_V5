@@ -506,6 +506,152 @@ DIGIT Studio is a configuration layer on top of the DIGIT platform:
 
 Traditional low-code tools focus on generic apps. DIGIT Studio focuses on standardizing complete, workflow-driven public service systems."""
     },
+    {
+        "question": "How do I test workflows before going live",
+        "answer": """DIGIT Studio provides a **Preview** feature to test workflows before publishing.
+
+**Using Preview:**
+- Simulate the end-to-end workflow
+- Test states and transitions
+- Validate role-based actions and permissions
+- Verify form behaviour and configurations
+- Identify issues before publishing
+
+**How it works:**
+1. Configure your application in Draft mode
+2. Launch using the Preview option
+3. Perform actions and observe state transitions
+4. Test with different user roles
+
+Use Preview to validate your workflow end-to-end before publishing, ensuring a smooth and error-free experience."""
+    },
+    {
+        "question": "What is the downtime during deployment",
+        "answer": """Downtime depends on what is being deployed:
+
+**Service deployment (via DIGIT Studio):**
+- Configuration-based, so downtime is typically **minimal or negligible**
+- Updates are applied by importing the latest service configuration
+- The system switches to the updated configuration without a full shutdown
+- Users may experience only a brief moment during the update
+
+**Initial DIGIT Studio / platform setup or upgrades:**
+- May involve service restarts or infrastructure changes
+- Typically planned during maintenance windows
+- Downtime can be higher and should be communicated to users in advance
+
+**Summary:** Service-level config updates have near-zero downtime. Platform-level deployments should be planned carefully."""
+    },
+    {
+        "question": "How do I assign roles to workflow steps",
+        "answer": """In a workflow, roles are assigned to **actions** (transitions), not directly to states.
+
+**Steps:**
+1. **Identify the workflow state** where access needs to be controlled (e.g., IN_REVIEW, SUBMITTED)
+2. **Define the action** that moves the workflow (e.g., APPROVE, REJECT, SEND_BACK)
+3. **Assign roles to the action** — select one or more roles (CITIZEN, EMPLOYEE, APPROVER) who can perform it
+4. Only users with the assigned role will see and be able to perform that action
+
+**Important:**
+- A user without the required role will not see the action button in the UI
+- Incorrect role configuration can cause workflow to get stuck (no one able to act)
+- Roles should match the user-role mapping defined in HRMS/user management
+
+**Example:**
+- State: IN_REVIEW → Action: APPROVE → Role: APPROVER
+- Only users with the APPROVER role can approve; others see no Approve button."""
+    },
+    {
+        "question": "How does role based access work",
+        "answer": """**Role-Based Access Control (RBAC)** ensures users can only perform actions and access features based on their assigned roles.
+
+**How it works:**
+- Each user is assigned one or more roles (e.g., CITIZEN, EMPLOYEE, APPROVER)
+- Each workflow action is configured with allowed roles
+- When a user accesses an application:
+  - The system checks the current state
+  - Filters available actions based on the user's roles
+  - Only permitted action buttons are shown in the UI
+
+**Examples:**
+- APPROVER role → sees Approve/Reject buttons
+- CITIZEN role → sees Submit/Track options
+- EMPLOYEE role → sees Verify/Forward options
+
+**Key points:**
+- A user can have multiple roles
+- Access is role-driven, not user-specific
+- Incorrect role configuration can hide required actions or block workflow progression"""
+    },
+    {
+        "question": "Where is the data stored",
+        "answer": """In DIGIT Studio (part of the DIGIT platform), data is stored in the DIGIT platform's backend systems:
+
+- **Application and transactional data** → stored in **PostgreSQL** databases used by DIGIT backend services
+- **Search and analytics data** → indexed in **Elasticsearch**
+- **Documents and files** → stored in the **File Store service** (object storage, e.g., S3 or equivalent)
+
+Data is managed by the platform services and segregated by **tenant** (city or department).
+
+**Summary:** Data is primarily in PostgreSQL, with Elasticsearch for search and File Store for documents."""
+    },
+    {
+        "question": "Can I integrate with existing identity systems",
+        "answer": """Yes, DIGIT supports integration with external identity systems.
+
+- Authentication is handled via the platform's **API Gateway** and **User Service**, allowing extensibility
+- You can integrate with **SSO, LDAP, or other identity providers** using API-based configuration
+- External systems can be used for user authentication and token generation
+- DIGIT's **RBAC** continues to manage authorization within the platform after authentication
+- Integration typically requires environment-level configuration and setup
+
+**For citizens:** Default is mobile/email OTP
+**For employees:** Default is username + password
+**Custom identity providers:** Configurable via the API Gateway"""
+    },
+    {
+        "question": "Can I build permit and license applications",
+        "answer": """Yes, permit and license applications are a core use case for DIGIT Studio.
+
+**What you can configure:**
+- **Service setup:** Create a service/module (e.g., Trade License, Building Permit) with types like New, Renewal, Modification
+- **Form configuration:** Design application forms with fields, validations, and required document uploads
+- **Workflow:** Define stages (Submission → Scrutiny → Approval → Issuance) with role-mapped actions
+- **Roles:** Configure Reviewer, Approver roles with correct permissions
+- **Notifications:** SMS/email updates at key milestones (submission, approval, rejection)
+- **Citizen & Employee apps:** Auto-generated for end-to-end lifecycle management
+
+**Current limitations:**
+- Document generation (e.g., license certificate PDF) requires additional configuration
+- Payment configuration is not yet available in Studio and requires external setup
+
+**In summary:** The core permit/license workflow and application journey can be fully configured in DIGIT Studio."""
+    },
+    {
+        "question": "Can I build any use case using DIGIT Studio",
+        "answer": """You can build a use case on DIGIT Studio if it follows a **service-based workflow** with data collection, processing, and a defined outcome.
+
+**A use case is a good fit if it has:**
+- Form-based data collection (users submit applications or requests)
+- Workflow or approval steps (requests move through roles/stages)
+- Task management (Inbox) for officials to review and act
+- Document handling (uploads and generated outputs)
+- Notifications (SMS, email, app updates)
+- Optional payments
+
+**Examples of supported use cases:**
+- License or permit systems
+- Complaint or grievance management
+- Registration and approval-based services
+- Inspection or checklist-based workflows
+
+**When it may not be suitable:**
+- Highly custom UI beyond configurable forms
+- Real-time heavy processing or complex computations
+- Systems without a defined request lifecycle
+
+**Summary:** If a use case can be structured as form → workflow → outcome (approval/rejection/record), it can be built using DIGIT Studio."""
+    },
 ]
 
 # ─────────────────────────────────────────────
@@ -555,7 +701,8 @@ def create_tables(conn):
                     answer_snippet TEXT,
                     rating VARCHAR(10),
                     source VARCHAR(20),
-                    comment TEXT
+                    comment TEXT,
+                    is_flagged BOOLEAN DEFAULT FALSE
                 )
             """)
 
