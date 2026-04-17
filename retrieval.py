@@ -2,7 +2,13 @@ from typing import List, Tuple, Dict
 from utils import get_conn, get_env_var
 import openai
 
-client = openai.OpenAI(api_key=get_env_var("OPENAI_API_KEY"))
+_client = None
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = openai.OpenAI(api_key=get_env_var("OPENAI_API_KEY"))
+    return _client
 
 TABLE = get_env_var("DB_TABLE", "studio_manual")
 
@@ -11,7 +17,7 @@ TABLE = get_env_var("DB_TABLE", "studio_manual")
 # Embedding
 # ─────────────────────────────────────────────
 def get_embedding(text: str) -> List[float]:
-    resp = client.embeddings.create(
+    resp = _get_client().embeddings.create(
         model="text-embedding-3-small",
         input=text
     )
