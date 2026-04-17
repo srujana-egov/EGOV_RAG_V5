@@ -223,44 +223,56 @@ if query:
 
     with st.chat_message("assistant"):
 
-        # ── STEP 1: Predetermined Q&A cache ──
-        cached = get_predetermined_answer(query)
+        with st.status("Thinking...", expanded=True) as status:
 
-        if cached:
-            answer = cached["answer"]
-            source = "cache"
-            st.markdown(answer)
+            # ── STEP 1: Predetermined Q&A cache ──
+            st.write("🔎 Step 1: Checking Q&A cache (44 preloaded answers)...")
+            cached = get_predetermined_answer(query)
+
+            if cached:
+                st.write("✅ Found in Q&A cache — returning instant answer.")
+                status.update(label="⚡ Answered from cache", state="complete", expanded=False)
+                answer = cached["answer"]
+                source = "cache"
+
+            else:
+                st.write("❌ Not in cache.")
+                st.write("🔎 Step 2: Searching studio_manual (documents + Supademo guide)...")
+
+                # ── STEP 2: RAG pipeline (studio_manual DB) ──
+                full_answer = ""
+                source = "rag"
+
+                try:
+                    chunks_collected = []
+                    for chunk in stream_rag_pipeline(
+                        query=query,
+                        hybrid_retrieve_pg=hybrid_retrieve_pg,
+                        top_k=5,
+                        model="gpt-4",
+                        history=st.session_state.history,
+                    ):
+                        full_answer += chunk
+                        chunks_collected.append(chunk)
+
+                    if full_answer.strip() == OUT_OF_DOMAIN_MSG.strip():
+                        source = "out_of_domain"
+                        st.write("⚠️ Query is outside DIGIT Studio scope.")
+                        status.update(label="⚠️ Outside domain", state="complete", expanded=False)
+                    else:
+                        st.write("✅ Relevant content found — generating answer.")
+                        status.update(label="✅ Answered from docs", state="complete", expanded=False)
+
+                except Exception as e:
+                    full_answer = "Something went wrong. Please try again."
+                    source = "error"
+                    status.update(label="❌ Error", state="error", expanded=False)
+
+                answer = full_answer
+
+        st.markdown(answer)
+        if source == "cache":
             st.caption("⚡ Instant answer")
-
-        else:
-            # ── STEP 2: RAG pipeline (studio_manual DB) ──
-            full_answer = ""
-            source = "rag"
-            container = st.empty()
-
-            try:
-                for chunk in stream_rag_pipeline(
-                    query=query,
-                    hybrid_retrieve_pg=hybrid_retrieve_pg,
-                    top_k=5,
-                    model="gpt-4",
-                    history=st.session_state.history,
-                ):
-                    full_answer += chunk
-                    container.markdown(full_answer + "▌")
-
-                # Detect out-of-domain response
-                if full_answer.strip() == OUT_OF_DOMAIN_MSG.strip():
-                    source = "out_of_domain"
-
-                container.markdown(full_answer)
-
-            except Exception as e:
-                full_answer = "Something went wrong. Please try again."
-                source = "error"
-                container.markdown(full_answer)
-
-            answer = full_answer
 
     # Append assistant message with metadata for feedback buttons
     st.session_state.messages.append({
