@@ -117,17 +117,17 @@ def chat_with_assistant(query: str, docs: list, history: list = None, model: str
 def stream_rag_answer(query: str, docs: list, history: list = None, model: str = "gpt-4"):
     messages = _build_messages(query, docs, history)
 
-    with _get_client().chat.completions.stream(
+    stream = _get_client().chat.completions.create(
         model=model,
         messages=messages,
         max_tokens=2000,
-        temperature=0.2
-    ) as stream:
-        for event in stream:
-            if event.type == "delta":
-                delta = event.delta
-                if delta and "content" in delta:
-                    yield delta["content"]
+        temperature=0.2,
+        stream=True,
+    )
+    for chunk in stream:
+        content = chunk.choices[0].delta.content
+        if content:
+            yield content
 
 
 # ─────────────────────────────────────────────
