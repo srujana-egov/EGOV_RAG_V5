@@ -65,4 +65,6 @@ def ingest(file_path):
 
 
 if __name__ == "__main__":
-    ingest("data/studio_chunks.jsonl")
+    import sys
+    path = sys.argv[1] if len(sys.argv) > 1 else "data/studio_chunks.jsonl"
+    ingest(path)
