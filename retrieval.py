@@ -1,29 +1,14 @@
 from typing import List, Tuple, Dict
 from utils import get_conn, get_env_var
 import openai
-import os
 
 _client = None
-_cohere_client = None
 
 def _get_client():
     global _client
     if _client is None:
         _client = openai.OpenAI(api_key=get_env_var("OPENAI_API_KEY"))
     return _client
-
-
-def _get_cohere():
-    global _cohere_client
-    if _cohere_client is None:
-        try:
-            import cohere
-            api_key = os.environ.get("COHERE_API_KEY")
-            if api_key:
-                _cohere_client = cohere.ClientV2(api_key=api_key)
-        except ImportError:
-            pass
-    return _cohere_client
 
 
 TABLE = get_env_var("DB_TABLE", "studio_manual")
@@ -102,57 +87,13 @@ def _rrf(vector_rows: list, bm25_rows: list, k: int = 60) -> List[Tuple[str, flo
 
 
 # ─────────────────────────────────────────────
-# Cohere reranker
-# ─────────────────────────────────────────────
-def _rerank(query: str, candidates: List[Tuple[str, float]], top_n: int,
-            vector_scores: Dict[str, float]) -> List[Tuple[str, Dict]]:
-    """
-    Rerank candidates with Cohere rerank-v3.5.
-    Falls back to original RRF order if Cohere unavailable.
-    Always preserves vector_score in metadata for domain detection.
-    """
-    co = _get_cohere()
-    if co is None:
-        print("[Rerank] Cohere unavailable — using RRF order.")
-        return [
-            (doc, {"score": score, "vector_score": vector_scores.get(doc, 0.0)})
-            for doc, score in candidates[:top_n]
-        ]
-
-    docs = [doc for doc, _ in candidates]
-    try:
-        response = co.rerank(
-            model="rerank-v3.5",
-            query=query,
-            documents=docs,
-            top_n=top_n,
-        )
-        reranked = [
-            (docs[r.index], {
-                "score": r.relevance_score,
-                "vector_score": vector_scores.get(docs[r.index], 0.0),
-            })
-            for r in response.results
-        ]
-        print(f"[Rerank] Cohere reranked {len(docs)} → top {top_n}")
-        return reranked
-    except Exception as e:
-        print(f"[Rerank] Cohere failed ({e}) — using RRF order.")
-        return [
-            (doc, {"score": score, "vector_score": vector_scores.get(doc, 0.0)})
-            for doc, score in candidates[:top_n]
-        ]
-
-
-# ─────────────────────────────────────────────
-# Hybrid retrieval: vector + BM25 → RRF → rerank
+# Hybrid retrieval: vector + BM25 → RRF
 # ─────────────────────────────────────────────
 def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
     """
-    1. Vector search (top 10)
-    2. BM25 full-text search (top 10)
-    3. Fuse with Reciprocal Rank Fusion
-    4. Rerank fused candidates with Cohere (→ top_k)
+    1. Vector search (top 2*k candidates via pgvector cosine)
+    2. BM25 full-text search (top 2*k candidates via PostgreSQL tsvector)
+    3. Fuse with Reciprocal Rank Fusion → return top_k
     """
     conn = get_conn()
 
@@ -171,11 +112,7 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
             """, (query_embedding, query_embedding, fetch))
             vector_rows = [(row[0], {"score": row[1]}) for row in cur.fetchall()]
 
-            # Keep cosine scores keyed by doc for domain detection in generator
-            vector_scores = {doc: meta["score"] for doc, meta in vector_rows}
-
             # ── BM25 full-text search ──
-            # Use plainto_tsquery for natural language queries (handles multi-word gracefully)
             cur.execute(f"""
                 SELECT document,
                        ts_rank_cd(fts, plainto_tsquery('english', %s)) AS score
@@ -194,8 +131,6 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
     if not vector_rows and not bm25_rows:
         return []
 
-    # ── Fuse ──
+    # ── Fuse with RRF ──
     fused = _rrf(vector_rows, bm25_rows)
-
-    # ── Rerank ──
-    return _rerank(query, fused, top_n=top_k, vector_scores=vector_scores)
+    return [(doc, {"score": score}) for doc, score in fused[:top_k]]

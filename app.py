@@ -261,7 +261,7 @@ if query:
                     for chunk in stream_rag_pipeline(
                         query=query,
                         hybrid_retrieve_pg=hybrid_retrieve_pg,
-                        top_k=10,
+                        top_k=5,
                         model="gpt-4",
                         history=st.session_state.history,
                     ):
