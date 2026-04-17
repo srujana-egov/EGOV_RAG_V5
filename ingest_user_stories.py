@@ -623,10 +623,7 @@ def create_table_if_missing(conn):
             CREATE TABLE IF NOT EXISTS {TABLE} (
                 id TEXT PRIMARY KEY,
                 document TEXT,
-                embedding vector(1536),
-                url TEXT,
-                tag TEXT,
-                version TEXT
+                embedding vector(1536)
             );
         """)
     conn.commit()
@@ -651,15 +648,12 @@ def ingest():
                     emb = get_embedding(text)
 
                     cur.execute(f"""
-                        INSERT INTO {TABLE} (id, document, embedding, url, tag, version)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO {TABLE} (id, document, embedding)
+                        VALUES (%s, %s, %s)
                         ON CONFLICT (id) DO UPDATE SET
                             document = EXCLUDED.document,
-                            embedding = EXCLUDED.embedding,
-                            url = EXCLUDED.url,
-                            tag = EXCLUDED.tag,
-                            version = EXCLUDED.version
-                    """, (chunk_id, text, emb, URL, TAG, VERSION))
+                            embedding = EXCLUDED.embedding
+                    """, (chunk_id, text, emb))
 
                     inserted += 1
                     print(f"  [{i+1}/{len(CHUNKS)}] ✅ {chunk_id}")

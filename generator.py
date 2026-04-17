@@ -151,7 +151,7 @@ def generate_rag_answer(
 
     docs = []
     for i, (doc, meta) in enumerate(docs_and_meta, start=1):
-        docs.append({"title": meta.get("title", f"Chunk {i}"), "content": doc, "url": meta.get("url", "")})
+        docs.append({"title": meta.get("title", f"Chunk {i}"), "content": doc})
 
     return chat_with_assistant(query, docs, history=history, model=model)
 
@@ -188,7 +188,7 @@ def stream_rag_pipeline(
 
     docs = []
     for i, (doc, meta) in enumerate(docs_and_meta, start=1):
-        docs.append({"title": meta.get("title", f"Chunk {i}"), "content": doc, "url": meta.get("url", "")})
+        docs.append({"title": meta.get("title", f"Chunk {i}"), "content": doc})
 
     yield from stream_rag_answer(query, docs, history=history, model=model)
 

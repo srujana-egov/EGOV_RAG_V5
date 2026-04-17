@@ -45,7 +45,7 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
             query_embedding = get_embedding(query)
 
             cur.execute(f"""
-                SELECT document, url,
+                SELECT document,
                        (1 - (embedding <=> %s::vector)) AS score
                 FROM {TABLE}
                 ORDER BY embedding <=> %s::vector
@@ -55,7 +55,7 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
             rows = cur.fetchall()
 
             return [
-                (row[0], {"url": row[1], "score": row[2]})
+                (row[0], {"score": row[1]})
                 for row in rows
             ]
 
