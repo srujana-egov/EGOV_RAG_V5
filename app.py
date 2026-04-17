@@ -111,10 +111,16 @@ def semantic_faq_search(query: str):
         return ("direct", {"id": item["id"], "answer": item["answer"], "confidence": score})
 
     if top_score >= 0.65:
+        # Only include chips that are individually relevant (within 0.10 of top score
+        # and above a minimum threshold), so we don't pad with loosely related questions.
+        min_chip_score = max(0.65, top_score - 0.10)
         chips = [
             {"question": item["question"], "answer": item["answer"], "score": score}
             for item, score in scored[:3]
+            if score >= min_chip_score
         ]
+        if not chips:
+            return ("rag", None)
         return ("chips", chips)
 
     return ("rag", None)
