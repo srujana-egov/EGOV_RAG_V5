@@ -48,13 +48,17 @@ def _load_qa_cache():
 # Predetermined Q&A matching
 # ─────────────────────────────────────────────
 
-# Common English stop words to ignore when matching
+# Common English stop words to ignore when matching.
+# "digit" and "studio" are added because they appear in every single Q&A in
+# this dataset — they carry zero discriminating power and cause false matches
+# (e.g. "what is DIGIT Studio" matching "What is a Service in DIGIT Studio").
 _STOP_WORDS = {
     "what", "when", "where", "which", "that", "this", "with", "from",
     "have", "does", "will", "can", "how", "why", "who", "are", "the",
     "and", "for", "not", "your", "my", "do", "is", "in", "an", "a",
     "to", "of", "on", "at", "by", "or", "be", "it", "as", "up",
     "about", "into", "after", "before", "during", "while", "there",
+    "digit", "studio",
 }
 
 # Generic action/modifier words that are too common to be meaningful on their own
@@ -132,7 +136,7 @@ def get_predetermined_answer(query: str):
             # No domain-specific token matched — penalise heavily
             score = jaccard * 0.5
 
-        if score >= 0.25 and score > best_score:
+        if score >= 0.45 and score > best_score:
             best_score = score
             effective_confidence = min(float(confidence or 1.0), score)
             best_match = {

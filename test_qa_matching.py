@@ -19,6 +19,7 @@ _STOP_WORDS = {
     "and", "for", "not", "your", "my", "do", "is", "in", "an", "a",
     "to", "of", "on", "at", "by", "or", "be", "it", "as", "up",
     "about", "into", "after", "before", "during", "while", "there",
+    "digit", "studio",
 }
 
 _WEAK_WORDS = {"create", "new", "make", "add", "get", "set", "use", "see",
@@ -73,7 +74,7 @@ def get_predetermined_answer(query: str, rows):
         else:
             score = jaccard * 0.5
 
-        if score >= 0.25 and score > best_score:
+        if score >= 0.45 and score > best_score:
             best_score = score
             best_match = answer
             best_question = question
