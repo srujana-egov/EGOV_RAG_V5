@@ -2,16 +2,19 @@
 DIGIT Studio Support Bot
 """
 
-import re
 import streamlit as st
 from generator import stream_rag_pipeline, OUT_OF_DOMAIN_MSG
-from retrieval import hybrid_retrieve_pg
+from retrieval import hybrid_retrieve_pg, get_embedding, get_embeddings_batch
 
 from utils import (
     get_conn,
     log_feedback,
+    log_query,
+    log_vote,
     ensure_feedback_table,
     ensure_qa_table_full,
+    ensure_query_history_table,
+    ensure_vote_log_table,
     update_qa_votes_and_promote,
 )
 
@@ -24,6 +27,8 @@ st.set_page_config(page_title="DIGIT Studio Assistant", page_icon="🛠️", lay
 try:
     ensure_feedback_table()
     ensure_qa_table_full()
+    ensure_query_history_table()
+    ensure_vote_log_table()
 except Exception:
     pass
 
@@ -31,9 +36,8 @@ except Exception:
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_qa_cache():
     """
-    Load all predetermined Q&A rows into memory once per process (refreshes
-    every 5 min to pick up auto-promoted entries). Avoids a DB round-trip on
-    every chat message.
+    Load all predetermined Q&A rows into memory (refreshes every 5 min
+    to pick up auto-promoted entries). No DB round-trip on every message.
     """
     conn = get_conn()
     try:
@@ -44,119 +48,89 @@ def _load_qa_cache():
         conn.close()
 
 
-# ─────────────────────────────────────────────
-# Predetermined Q&A matching
-# ─────────────────────────────────────────────
-
-# Common English stop words to ignore when matching.
-# "digit" and "studio" are added because they appear in every single Q&A in
-# this dataset — they carry zero discriminating power and cause false matches
-# (e.g. "what is DIGIT Studio" matching "What is a Service in DIGIT Studio").
-_STOP_WORDS = {
-    "what", "when", "where", "which", "that", "this", "with", "from",
-    "have", "does", "will", "can", "how", "why", "who", "are", "the",
-    "and", "for", "not", "your", "my", "do", "is", "in", "an", "a",
-    "to", "of", "on", "at", "by", "or", "be", "it", "as", "up",
-    "about", "into", "after", "before", "during", "while", "there",
-    "digit", "studio",
-}
-
-# Generic action/modifier words that are too common to be meaningful on their own
-_WEAK_WORDS = {"create", "new", "make", "add", "get", "set", "use", "see",
-               "view", "edit", "show", "find", "list", "all", "any"}
-
-
-def _stem(word: str) -> str:
-    """Strip common English suffixes so 'workflows' matches 'workflow', etc."""
-    for suffix in ("ings", "ing", "tion", "tions", "ed", "ers", "er", "s"):
-        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
-            return word[: -len(suffix)]
-    return word
-
-
-def _tokenize(text: str) -> set:
-    """Extract stemmed, meaningful tokens from text."""
-    return set(
-        _stem(w) for w in re.findall(r'[a-z0-9]+', text.strip().lower())
-        if len(w) >= 3 and w not in _STOP_WORDS
-    )
-
-
-def get_predetermined_answer(query: str):
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_faq_embeddings():
     """
-    Match query against predetermined Q&A cache using Jaccard similarity
-    on stemmed tokens. Returns the best match dict if score >= 0.25,
-    or None to fall through to RAG.
-
-    Jaccard = |common| / |union| guards against one-sided matches where
-    generic shared words (e.g. 'create', 'new') inflate a one-directional
-    coverage score.
-
-    Rows are loaded from _load_qa_cache() (in-memory, refreshed every 5 min)
-    so no DB hit happens per message.
+    Embed every FAQ question in one batch API call; cache for 1 hour.
+    Returns a list of dicts with keys: id, question, answer, confidence, embedding.
     """
     rows = _load_qa_cache()
+    if not rows:
+        return []
+    questions = [r[1] for r in rows]
+    embeddings = get_embeddings_batch(questions)
+    return [
+        {
+            "id": r[0],
+            "question": r[1],
+            "answer": r[2],
+            "confidence": r[3],
+            "embedding": emb,
+        }
+        for r, emb in zip(rows, embeddings)
+    ]
 
-    q = query.strip().lower()
-    q_words = _tokenize(q)
 
-    if not q_words:
-        return None
+# ─────────────────────────────────────────────
+# Semantic FAQ matching
+# ─────────────────────────────────────────────
 
-    # Downweight tokens that are too generic to distinguish topics
-    q_strong = q_words - _WEAK_WORDS
+def _cosine_sim(a: list, b: list) -> float:
+    """
+    Cosine similarity via dot product. Safe because text-embedding-3-small
+    vectors are already L2-normalised (unit length).
+    """
+    return sum(x * y for x, y in zip(a, b))
 
-    best_match = None
-    best_score = 0.0
 
-    for row_id, question, answer, confidence in rows:
-        p = question.strip().lower()
+def semantic_faq_search(query: str):
+    """
+    Compare query against all FAQ question embeddings.
 
-        # Exact match → return immediately with full confidence
-        if q == p:
-            return {"id": row_id, "answer": answer, "confidence": 1.0}
+    Returns one of:
+        ("direct", {"id", "answer", "confidence"})   — score > 0.85
+        ("chips",  [{"question", "answer", "score"}, ...])  — score 0.65–0.85, top 3
+        ("rag",    None)                             — score < 0.65
+    """
+    faq_items = _load_faq_embeddings()
+    if not faq_items:
+        return ("rag", None)
 
-        p_words = _tokenize(p)
-        if not p_words:
-            continue
+    query_emb = get_embedding(query)
 
-        common = q_words & p_words
-        if not common:
-            continue
+    scored = sorted(
+        [(item, _cosine_sim(query_emb, item["embedding"])) for item in faq_items],
+        key=lambda x: x[1],
+        reverse=True,
+    )
 
-        # Jaccard similarity over all tokens
-        jaccard = len(common) / len(q_words | p_words)
+    top_score = scored[0][1] if scored else 0.0
 
-        # Bonus: if strong (domain-specific) tokens match, boost the score
-        strong_common = q_strong & p_words
-        if q_strong and strong_common:
-            strong_bonus = len(strong_common) / len(q_strong)
-            score = jaccard + 0.2 * strong_bonus
-        else:
-            # No domain-specific token matched — penalise heavily
-            score = jaccard * 0.5
+    if top_score > 0.85:
+        item, score = scored[0]
+        return ("direct", {"id": item["id"], "answer": item["answer"], "confidence": score})
 
-        if score >= 0.45 and score > best_score:
-            best_score = score
-            effective_confidence = min(float(confidence or 1.0), score)
-            best_match = {
-                "id": row_id,
-                "answer": answer,
-                "confidence": effective_confidence,
-            }
+    if top_score >= 0.65:
+        chips = [
+            {"question": item["question"], "answer": item["answer"], "score": score}
+            for item, score in scored[:3]
+        ]
+        return ("chips", chips)
 
-    return best_match
+    return ("rag", None)
 
 
 # ─────────────────────────────────────────────
 # Session state init
 # ─────────────────────────────────────────────
 if "history" not in st.session_state:
-    st.session_state.history = []   # sent to LLM for context
+    st.session_state.history = []
 
 if "messages" not in st.session_state:
-    # Each assistant message also stores: query, source, feedback
     st.session_state.messages = []
+
+if "pending_chip_query" not in st.session_state:
+    st.session_state.pending_chip_query = None
 
 
 # ─────────────────────────────────────────────
@@ -179,32 +153,44 @@ for i, msg in enumerate(st.session_state.messages):
         if msg["role"] == "assistant":
             source = msg.get("source", "rag")
 
+            # Chip suggestions
+            if source == "chips" and msg.get("chips"):
+                st.markdown("**Did you mean one of these?**")
+                for j, chip in enumerate(msg["chips"]):
+                    if st.button(chip["question"], key=f"hist_chip_{i}_{j}"):
+                        st.session_state.pending_chip_query = chip["question"]
+                        st.rerun()
+
             # Source badge
             if source == "cache":
                 st.caption("⚡ Instant answer")
 
-            # Feedback buttons — only for cache/rag answers, not out-of-domain
+            # Feedback buttons — only for cache/rag answers, not chips/out-of-domain
             if source in ("cache", "rag"):
                 fb = msg.get("feedback")
                 if fb is None:
                     col1, col2, _ = st.columns([1, 1, 8])
                     with col1:
                         if st.button("👍", key=f"up_{i}", help="This was helpful"):
-                            log_feedback(
-                                msg.get("query", ""), msg["content"],
-                                "positive", source
-                            )
+                            # Positive votes go to vote_log only (not bot_feedback)
+                            log_vote(msg.get("query", ""), msg["content"], "positive")
                             update_qa_votes_and_promote(
                                 msg.get("query", ""), msg["content"], "positive"
                             )
-                            _load_qa_cache.clear()  # bust in-memory cache so promotion is visible
+                            _load_qa_cache.clear()
+                            _load_faq_embeddings.clear()
                             st.session_state.messages[i]["feedback"] = "positive"
                             st.rerun()
                     with col2:
                         if st.button("👎", key=f"down_{i}", help="This wasn't helpful"):
+                            # Negative votes go to bot_feedback (for review) AND vote_log
                             log_feedback(
                                 msg.get("query", ""), msg["content"],
                                 "negative", source
+                            )
+                            log_vote(msg.get("query", ""), msg["content"], "negative")
+                            update_qa_votes_and_promote(
+                                msg.get("query", ""), msg["content"], "negative"
                             )
                             st.session_state.messages[i]["feedback"] = "negative"
                             st.rerun()
@@ -213,9 +199,16 @@ for i, msg in enumerate(st.session_state.messages):
 
 
 # ─────────────────────────────────────────────
-# New query input
+# Query input (chat box always rendered; chip clicks override it)
 # ─────────────────────────────────────────────
-query = st.chat_input("Ask a question about DIGIT Studio...")
+chat_input = st.chat_input("Ask a question about DIGIT Studio...")
+
+# Chip click sets pending_chip_query; on next render it becomes the query
+if st.session_state.pending_chip_query:
+    query = st.session_state.pending_chip_query
+    st.session_state.pending_chip_query = None
+else:
+    query = chat_input
 
 if query:
     # Append user message
@@ -229,26 +222,35 @@ if query:
 
         with st.status("Thinking...", expanded=True) as status:
 
-            # ── STEP 1: Predetermined Q&A cache ──
-            st.write("🔎 Step 1: Checking Q&A cache (44 preloaded answers)...")
-            cached = get_predetermined_answer(query)
+            # ── STEP 1: Semantic FAQ search ──
+            n_faq = len(_load_qa_cache())
+            st.write(f"🔎 Step 1: Semantic search across {n_faq} FAQ entries...")
+            result_type, result_data = semantic_faq_search(query)
 
-            if cached:
-                st.write("✅ Found in Q&A cache — returning instant answer.")
-                status.update(label="⚡ Answered from cache", state="complete", expanded=False)
-                answer = cached["answer"]
+            if result_type == "direct":
+                st.write("✅ High-confidence FAQ match — returning instant answer.")
+                status.update(label="⚡ Answered from FAQ", state="complete", expanded=False)
+                answer = result_data["answer"]
                 source = "cache"
+                chips = None
+
+            elif result_type == "chips":
+                st.write("💡 Found similar questions — showing suggestions.")
+                status.update(label="💡 Did you mean…", state="complete", expanded=False)
+                answer = "I found some related questions that might help:"
+                source = "chips"
+                chips = result_data
 
             else:
-                st.write("❌ Not in cache.")
+                st.write("❌ No close FAQ match (score < 0.65).")
                 st.write("🔎 Step 2: Searching studio_manual (documents + Supademo guide)...")
 
-                # ── STEP 2: RAG pipeline (studio_manual DB) ──
+                # ── STEP 2: RAG pipeline ──
                 full_answer = ""
                 source = "rag"
+                chips = None
 
                 try:
-                    chunks_collected = []
                     for chunk in stream_rag_pipeline(
                         query=query,
                         hybrid_retrieve_pg=hybrid_retrieve_pg,
@@ -257,7 +259,6 @@ if query:
                         history=st.session_state.history,
                     ):
                         full_answer += chunk
-                        chunks_collected.append(chunk)
 
                     if full_answer.strip() == OUT_OF_DOMAIN_MSG.strip():
                         source = "out_of_domain"
@@ -267,7 +268,7 @@ if query:
                         st.write("✅ Relevant content found — generating answer.")
                         status.update(label="✅ Answered from docs", state="complete", expanded=False)
 
-                except Exception as e:
+                except Exception:
                     full_answer = "Something went wrong. Please try again."
                     source = "error"
                     status.update(label="❌ Error", state="error", expanded=False)
@@ -275,18 +276,36 @@ if query:
                 answer = full_answer
 
         st.markdown(answer)
+
+        # Render chip buttons immediately after the answer
+        if source == "chips" and chips:
+            st.markdown("**Did you mean one of these?**")
+            for idx, chip in enumerate(chips):
+                if st.button(chip["question"], key=f"new_chip_{idx}"):
+                    st.session_state.pending_chip_query = chip["question"]
+                    st.rerun()
+
         if source == "cache":
             st.caption("⚡ Instant answer")
 
-    # Append assistant message with metadata for feedback buttons
-    st.session_state.messages.append({
+    # Log every query + answer to query_history
+    try:
+        log_query(query, answer, source)
+    except Exception:
+        pass
+
+    # Store message with chip data
+    msg_data = {
         "role": "assistant",
         "content": answer,
         "query": query,
         "source": source,
         "feedback": None,
-    })
+    }
+    if chips:
+        msg_data["chips"] = chips
+
+    st.session_state.messages.append(msg_data)
     st.session_state.history.append({"role": "assistant", "content": answer})
 
-    # Rerun so feedback buttons appear via the main message loop
     st.rerun()
