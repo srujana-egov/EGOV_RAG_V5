@@ -11,10 +11,7 @@ def create_table(conn):
             CREATE TABLE IF NOT EXISTS {TABLE} (
                 id TEXT PRIMARY KEY,
                 document TEXT,
-                embedding vector(1536),
-                url TEXT,
-                tag TEXT,
-                version TEXT
+                embedding vector(1536)
             );
         """)
     conn.commit()
@@ -38,16 +35,13 @@ def ingest(file_path):
                     emb = get_embedding(chunk["document"])
 
                     cur.execute(f"""
-                        INSERT INTO {TABLE} (id, document, embedding, url, tag, version)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO {TABLE} (id, document, embedding)
+                        VALUES (%s, %s, %s)
                         ON CONFLICT (id) DO NOTHING
                     """, (
                         chunk["id"],
                         chunk["document"],
                         emb,
-                        chunk.get("url"),
-                        chunk.get("tag"),
-                        chunk.get("version")
                     ))
 
                     if i % 5 == 0:

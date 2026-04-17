@@ -587,15 +587,12 @@ def insert_chunk(doc_id: str, text: str, metadata: dict, get_embedding, table: s
     try:
         with conn.cursor() as cur:
             cur.execute(f"""
-                INSERT INTO {table} (id, document, embedding, url, tag, version)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO {table} (id, document, embedding)
+                VALUES (%s, %s, %s)
                 ON CONFLICT (id) DO UPDATE SET
                     document = EXCLUDED.document,
-                    embedding = EXCLUDED.embedding,
-                    url = EXCLUDED.url,
-                    tag = EXCLUDED.tag,
-                    version = EXCLUDED.version
-            """, (doc_id, text, emb, metadata.get("url"), metadata.get("tag"), metadata.get("version")))
+                    embedding = EXCLUDED.embedding
+            """, (doc_id, text, emb))
         conn.commit()
     finally:
         conn.close()
