@@ -4,7 +4,7 @@ DIGIT Studio Support Bot
 
 import streamlit as st
 from generator import stream_rag_pipeline, OUT_OF_DOMAIN_MSG
-from retrieval import hybrid_retrieve_pg, get_embedding, get_embeddings_batch
+from retrieval import hybrid_retrieve_pg, get_embedding, get_embeddings_batch, ensure_fts_index
 
 from utils import (
     get_conn,
@@ -23,12 +23,13 @@ from utils import (
 # ─────────────────────────────────────────────
 st.set_page_config(page_title="DIGIT Studio Assistant", page_icon="🛠️", layout="wide")
 
-# Ensure DB tables exist
+# Ensure DB tables and indexes exist
 try:
     ensure_feedback_table()
     ensure_qa_table_full()
     ensure_query_history_table()
     ensure_vote_log_table()
+    ensure_fts_index()
 except Exception:
     pass
 
@@ -260,7 +261,7 @@ if query:
                     for chunk in stream_rag_pipeline(
                         query=query,
                         hybrid_retrieve_pg=hybrid_retrieve_pg,
-                        top_k=5,
+                        top_k=10,
                         model="gpt-4",
                         history=st.session_state.history,
                     ):

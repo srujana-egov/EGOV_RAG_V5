@@ -145,8 +145,11 @@ def generate_rag_answer(
     if not docs_and_meta:
         return OUT_OF_DOMAIN_MSG
 
-    max_score = max(meta.get("score", 0) for _, meta in docs_and_meta)
-    if max_score < OUT_OF_DOMAIN_THRESHOLD:
+    max_vector_score = max(
+        meta.get("vector_score", meta.get("score", 0))
+        for _, meta in docs_and_meta
+    )
+    if max_vector_score < OUT_OF_DOMAIN_THRESHOLD:
         return OUT_OF_DOMAIN_MSG
 
     docs = []
@@ -178,11 +181,16 @@ def stream_rag_pipeline(
         yield OUT_OF_DOMAIN_MSG
         return
 
-    # Check best similarity score
-    max_score = max(meta.get("score", 0) for _, meta in docs_and_meta)
-    print(f"[Domain] Max retrieval score: {max_score:.3f} (threshold={OUT_OF_DOMAIN_THRESHOLD})")
+    # Domain check uses vector cosine score (stable 0-1 range).
+    # After reranking, meta["score"] is a Cohere relevance score; we preserve
+    # the original cosine similarity in meta["vector_score"] for this check.
+    max_vector_score = max(
+        meta.get("vector_score", meta.get("score", 0))
+        for _, meta in docs_and_meta
+    )
+    print(f"[Domain] Max vector score: {max_vector_score:.3f} (threshold={OUT_OF_DOMAIN_THRESHOLD})")
 
-    if max_score < OUT_OF_DOMAIN_THRESHOLD:
+    if max_vector_score < OUT_OF_DOMAIN_THRESHOLD:
         yield OUT_OF_DOMAIN_MSG
         return
 

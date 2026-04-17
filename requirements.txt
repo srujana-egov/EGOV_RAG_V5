@@ -7,3 +7,4 @@ pgvector>=0.2.4
 
 python-dotenv>=1.0.0
 tiktoken>=0.7.0
+cohere>=5.0.0
