@@ -10,8 +10,10 @@ from retrieval import hybrid_retrieve_pg
 from utils import (
     get_conn,
     log_feedback,
+    log_query,
     ensure_feedback_table,
     ensure_qa_table_full,
+    ensure_query_history_table,
     update_qa_votes_and_promote,
 )
 
@@ -24,6 +26,7 @@ st.set_page_config(page_title="DIGIT Studio Assistant", page_icon="🛠️", lay
 try:
     ensure_feedback_table()
     ensure_qa_table_full()
+    ensure_query_history_table()
 except Exception:
     pass
 
@@ -277,6 +280,8 @@ if query:
         st.markdown(answer)
         if source == "cache":
             st.caption("⚡ Instant answer")
+
+    log_query(query, answer, source)
 
     # Append assistant message with metadata for feedback buttons
     st.session_state.messages.append({
