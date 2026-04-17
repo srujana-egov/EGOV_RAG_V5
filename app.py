@@ -3,22 +3,16 @@ DIGIT Studio Support Bot
 """
 
 import re
-import pandas as pd
 import streamlit as st
 from generator import stream_rag_pipeline, OUT_OF_DOMAIN_MSG
 from retrieval import hybrid_retrieve_pg
 
 from utils import (
     get_conn,
-    get_env_var,
     log_feedback,
-    log_query,
     ensure_feedback_table,
     ensure_qa_table_full,
-    ensure_query_history_table,
     update_qa_votes_and_promote,
-    get_query_history,
-    get_flagged_queries,
 )
 
 # ─────────────────────────────────────────────
@@ -30,7 +24,6 @@ st.set_page_config(page_title="DIGIT Studio Assistant", page_icon="🛠️", lay
 try:
     ensure_feedback_table()
     ensure_qa_table_full()
-    ensure_query_history_table()
 except Exception:
     pass
 
@@ -161,74 +154,6 @@ if "messages" not in st.session_state:
     # Each assistant message also stores: query, source, feedback
     st.session_state.messages = []
 
-if "admin_authed" not in st.session_state:
-    st.session_state.admin_authed = False
-
-
-# ─────────────────────────────────────────────
-# Admin panel (sidebar)
-# ─────────────────────────────────────────────
-_ADMIN_PASSWORD = get_env_var("ADMIN_PASSWORD", "")
-
-with st.sidebar:
-    st.markdown("### Admin")
-
-    if not st.session_state.admin_authed:
-        pwd = st.text_input("Password", type="password", key="admin_pwd_input")
-        if st.button("Login", key="admin_login"):
-            if _ADMIN_PASSWORD and pwd == _ADMIN_PASSWORD:
-                st.session_state.admin_authed = True
-                st.rerun()
-            else:
-                st.error("Incorrect password")
-    else:
-        if st.button("Logout", key="admin_logout"):
-            st.session_state.admin_authed = False
-            st.rerun()
-
-        tab_hist, tab_flagged = st.tabs(["Query History", "Flagged"])
-
-        with tab_hist:
-            if st.button("Refresh", key="refresh_hist"):
-                st.cache_data.clear()
-            rows = get_query_history(limit=200)
-            if rows:
-                df = pd.DataFrame(rows)
-                df["created_at"] = pd.to_datetime(df["created_at"]).dt.strftime("%Y-%m-%d %H:%M")
-                df = df.rename(columns={
-                    "created_at": "Time", "query": "Query",
-                    "answer_snippet": "Answer", "source": "Source"
-                })
-                source_filter = st.selectbox(
-                    "Filter by source", ["all", "cache", "rag", "out_of_domain"],
-                    key="hist_source_filter"
-                )
-                if source_filter != "all":
-                    df = df[df["Source"] == source_filter]
-                st.dataframe(df[["Time", "Source", "Query"]], use_container_width=True)
-                with st.expander("Show full answers"):
-                    st.dataframe(df, use_container_width=True)
-            else:
-                st.info("No queries logged yet.")
-
-        with tab_flagged:
-            if st.button("Refresh", key="refresh_flagged"):
-                st.cache_data.clear()
-            flagged = get_flagged_queries()
-            if flagged:
-                df_f = pd.DataFrame(flagged)
-                df_f["created_at"] = pd.to_datetime(df_f["created_at"]).dt.strftime("%Y-%m-%d %H:%M")
-                df_f = df_f.rename(columns={
-                    "created_at": "Time", "query": "Query",
-                    "answer_snippet": "Answer", "source": "Source", "comment": "Comment"
-                })
-                st.markdown(f"**{len(df_f)} flagged queries**")
-                st.dataframe(df_f[["Time", "Source", "Query", "Comment"]], use_container_width=True)
-                with st.expander("Show full answers"):
-                    st.dataframe(df_f, use_container_width=True)
-            else:
-                st.success("No flagged queries.")
-
 
 # ─────────────────────────────────────────────
 # UI header
@@ -308,7 +233,7 @@ if query:
             st.caption("⚡ Instant answer")
 
         else:
-            # ── STEP 2: RAG pipeline ──
+            # ── STEP 2: RAG pipeline (studio_manual DB) ──
             full_answer = ""
             source = "rag"
             container = st.empty()
@@ -336,9 +261,6 @@ if query:
                 container.markdown(full_answer)
 
             answer = full_answer
-
-    # Log every query to query_history (regardless of feedback)
-    log_query(query, answer, source)
 
     # Append assistant message with metadata for feedback buttons
     st.session_state.messages.append({
