@@ -81,6 +81,43 @@ def ensure_query_history_table():
         conn.close()
 
 
+def ensure_vote_log_table():
+    """Lightweight table for tracking thumbs-up/down counts used for auto-promotion."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS vote_log (
+                    id SERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    query TEXT,
+                    answer_snippet TEXT,
+                    rating VARCHAR(10)
+                )
+            """)
+        conn.commit()
+    except Exception as e:
+        print(f"[DB] Could not create vote_log table: {e}")
+    finally:
+        conn.close()
+
+
+def log_vote(query: str, answer: str, rating: str):
+    """Record a vote (positive or negative) for auto-promotion tracking."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO vote_log (query, answer_snippet, rating)
+                VALUES (%s, %s, %s)
+            """, (query, answer[:500], rating))
+        conn.commit()
+    except Exception as e:
+        print(f"[VoteLog] Log failed: {e}")
+    finally:
+        conn.close()
+
+
 def log_query(query: str, answer: str, source: str):
     conn = get_conn()
     try:
@@ -261,12 +298,12 @@ def update_qa_votes_and_promote(query: str, answer: str, rating: str):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            # Count votes for this query (case-insensitive)
+            # Count votes for this query from vote_log (case-insensitive)
             cur.execute("""
                 SELECT
                     SUM(CASE WHEN rating = 'positive' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN rating = 'negative' THEN 1 ELSE 0 END)
-                FROM bot_feedback
+                FROM vote_log
                 WHERE LOWER(TRIM(query)) = LOWER(TRIM(%s))
             """, (query,))
             row = cur.fetchone()

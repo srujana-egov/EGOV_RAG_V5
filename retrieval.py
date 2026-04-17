@@ -24,6 +24,16 @@ def get_embedding(text: str) -> List[float]:
     return resp.data[0].embedding
 
 
+def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
+    """Embed multiple texts in a single API call (preserves order)."""
+    resp = _get_client().embeddings.create(
+        model="text-embedding-3-small",
+        input=texts
+    )
+    items = sorted(resp.data, key=lambda x: x.index)
+    return [item.embedding for item in items]
+
+
 # ─────────────────────────────────────────────
 # Retrieval
 # ─────────────────────────────────────────────
