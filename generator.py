@@ -79,8 +79,7 @@ Guidelines:
 - Answer in plain, friendly language.
 - Use numbered lists for step-by-step instructions, bullet points for feature lists.
 - If information is missing from the context, say so and suggest checking the documentation.
-- Always include relevant source URLs at the end under a "📎 References" section.
-- Do not mention HCM or Health Campaign Management unless the user asks.
+- Always include relevant source URLs at the end under a "For more info, here is an end-to-end demo of DIGIT Studio:" section.
 - Keep answers concise but complete."""
 
 
