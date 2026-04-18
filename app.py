@@ -174,6 +174,12 @@ for i, msg in enumerate(st.session_state.messages):
             if source == "cache":
                 st.caption("⚡ Instant answer")
 
+            if source == "rag" and msg.get("sources"):
+                with st.expander("📚 Sources used", expanded=False):
+                    for s in msg["sources"]:
+                        label = f"{s['section']} / {s['id']}" if s.get('section') else s['id']
+                        st.caption(label)
+
             # Feedback buttons — only for cache/rag answers, not chips/out-of-domain
             if source in ("cache", "rag"):
                 fb = msg.get("feedback")
@@ -230,6 +236,7 @@ if query:
         st.markdown(query)
 
     with st.chat_message("assistant"):
+        sources = []
 
         with st.status("Thinking...", expanded=True) as status:
 
@@ -268,6 +275,7 @@ if query:
                         top_k=8,
                         model="gpt-4o",
                         history=st.session_state.history,
+                        collected_sources=sources,
                     )
                     # Peek at first chunk to detect out-of-domain before streaming
                     first_chunk = next(rag_gen, "")
@@ -317,6 +325,12 @@ if query:
         if source == "cache":
             st.caption("⚡ Instant answer")
 
+        if source == "rag" and sources:
+            with st.expander("📚 Sources used", expanded=False):
+                for s in sources:
+                    label = f"{s['section']} / {s['id']}" if s.get('section') else s['id']
+                    st.caption(label)
+
     # Log every query + answer to query_history
     try:
         log_query(query, answer, source)
@@ -333,6 +347,8 @@ if query:
     }
     if chips:
         msg_data["chips"] = chips
+    if sources:
+        msg_data["sources"] = sources
 
     st.session_state.messages.append(msg_data)
     st.session_state.history.append({"role": "assistant", "content": answer})

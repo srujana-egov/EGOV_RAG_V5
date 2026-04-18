@@ -176,7 +176,8 @@ def stream_rag_pipeline(
     hybrid_retrieve_pg,
     top_k: int = 5,
     model: str = "gpt-4",
-    history: list = None
+    history: list = None,
+    collected_sources: list = None,
 ):
     """
     Generator that rewrites query, retrieves docs, checks domain, then streams the answer.
@@ -208,6 +209,13 @@ def stream_rag_pipeline(
         section = meta.get("section", "")
         title = f"{section} / {chunk_id}" if section else chunk_id
         docs.append({"title": title, "content": doc})
+
+    if collected_sources is not None:
+        for doc, meta in docs_and_meta[:top_k]:
+            collected_sources.append({
+                "id": meta.get("id", ""),
+                "section": meta.get("section", ""),
+            })
 
     yield from stream_rag_answer(query, docs, history=history, model=model)
 
