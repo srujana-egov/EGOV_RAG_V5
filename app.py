@@ -3,7 +3,11 @@ DIGIT Studio Support Bot
 """
 
 import time
+import uuid
+import logging
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 from generator import stream_rag_pipeline, OUT_OF_DOMAIN_MSG
 from retrieval import hybrid_retrieve_pg, get_embedding, get_embeddings_batch, ensure_fts_index
 
@@ -58,6 +62,17 @@ if _APP_PASSWORD:
 _RATE_WINDOW = int(get_env_var("RATE_WINDOW_SECONDS", "60"))
 _RATE_MAX    = int(get_env_var("MAX_QUERIES_PER_WINDOW", "20"))
 
+_MAX_QUERY_LEN = 500
+_INJECTION_PATTERNS = [
+    "ignore all previous instructions",
+    "ignore previous instructions",
+    "disregard your instructions",
+    "you are now",
+    "new instructions:",
+    "system prompt:",
+    "forget everything",
+]
+
 if "rate_timestamps" not in st.session_state:
     st.session_state.rate_timestamps = []
 
@@ -73,6 +88,23 @@ def _check_rate_limit() -> bool:
         return False
     st.session_state.rate_timestamps.append(now)
     return True
+
+
+def _validate_query(query: str):
+    """
+    Returns (clean_query, error_msg_or_None).
+    Truncates overlength queries; rejects injection attempts.
+    """
+    q = query.strip()
+    if len(q) > _MAX_QUERY_LEN:
+        q = q[:_MAX_QUERY_LEN]
+        logger.warning("Query truncated to %d chars", _MAX_QUERY_LEN)
+    lower = q.lower()
+    for pattern in _INJECTION_PATTERNS:
+        if pattern in lower:
+            logger.warning("Prompt injection attempt detected: %r", q[:80])
+            return None, "⚠️ That message contains content that can't be processed. Please ask a question about DIGIT Studio."
+    return q, None
 
 # Ensure DB tables and indexes exist
 try:
@@ -345,6 +377,12 @@ if query:
         )
         st.stop()
 
+    # ── Input validation + injection defence ──
+    query, _validation_error = _validate_query(query)
+    if _validation_error:
+        st.warning(_validation_error)
+        st.stop()
+
     # Append user message (cap history at 20 to avoid unbounded growth)
     st.session_state.messages.append({"role": "user", "content": query})
     st.session_state.history.append({"role": "user", "content": query})
@@ -364,11 +402,13 @@ if query:
 
             # ── Contextual query resolution ──
             # Expand/replace short or ambiguous follow-ups using conversation history
+            req_id = uuid.uuid4().hex[:8]
+            logger.info("query_start req=%s query=%r", req_id, query)
             effective_query = _resolve_effective_query(
                 query, st.session_state.messages[:-1]  # exclude the just-appended user msg
             )
             if effective_query != query:
-                print(f"[QueryResolve] '{query}' → '{effective_query}'")
+                logger.info("QueryResolve: '%s' → '%s'", query, effective_query)
 
             # ── STEP 1: Semantic FAQ search ──
             n_faq = len(_load_qa_cache())
@@ -455,8 +495,8 @@ if query:
             retrieve_ms = timings.get("retrieve_ms", 0)
             generate_ms = timings.get("generate_ms", 0)
             total_ms    = int((time.perf_counter() - t_query_start) * 1000)
-            print(f"[Latency] rewrite={rewrite_ms}ms retrieve={retrieve_ms}ms "
-                  f"generate={generate_ms}ms total={total_ms}ms")
+            logger.info("Latency: rewrite=%dms retrieve=%dms generate=%dms total=%dms",
+                        rewrite_ms, retrieve_ms, generate_ms, total_ms)
             st.caption(
                 f"⏱ Rewrite {rewrite_ms}ms · Retrieve {retrieve_ms}ms · "
                 f"Generate {generate_ms}ms · Total {total_ms}ms"
@@ -484,6 +524,7 @@ if query:
     try:
         total_ms   = int((time.perf_counter() - t_query_start) * 1000)
         top_score  = timings.get("top_score")
+        logger.info("query_done req=%s source=%s latency_ms=%s", req_id, source, int((time.perf_counter() - t_query_start)*1000))
         log_query(query, answer, source, latency_ms=total_ms, top_score=top_score)
     except Exception:
         pass
