@@ -54,6 +54,10 @@ def ensure_fts_index():
                 CREATE INDEX IF NOT EXISTS {TABLE}_fts_idx
                 ON {TABLE} USING GIN(fts);
             """)
+            cur.execute(f"""
+                CREATE INDEX IF NOT EXISTS {TABLE}_hnsw_idx
+                ON {TABLE} USING hnsw (embedding vector_cosine_ops);
+            """)
         conn.commit()
         print("[FTS] tsvector column + GIN index ensured.")
     except Exception as e:
@@ -104,24 +108,24 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
 
             # ── Vector search ──
             cur.execute(f"""
-                SELECT id, document,
+                SELECT id, document, section,
                        (1 - (embedding <=> %s::vector)) AS score
                 FROM {TABLE}
                 ORDER BY embedding <=> %s::vector
                 LIMIT %s
             """, (query_embedding, query_embedding, fetch))
-            vector_rows = [(row[1], {"id": row[0], "score": row[2]}) for row in cur.fetchall()]
+            vector_rows = [(row[1], {"id": row[0], "section": row[2], "score": row[3]}) for row in cur.fetchall()]
 
             # ── BM25 full-text search ──
             cur.execute(f"""
-                SELECT id, document,
-                       ts_rank_cd(fts, plainto_tsquery('english', %s)) AS score
+                SELECT id, document, section,
+                       ts_rank_cd(fts, websearch_to_tsquery('english', %s)) AS score
                 FROM {TABLE}
-                WHERE fts @@ plainto_tsquery('english', %s)
+                WHERE fts @@ websearch_to_tsquery('english', %s)
                 ORDER BY score DESC
                 LIMIT %s
             """, (query, query, fetch))
-            bm25_rows = [(row[1], {"id": row[0], "score": row[2]}) for row in cur.fetchall()]
+            bm25_rows = [(row[1], {"id": row[0], "section": row[2], "score": row[3]}) for row in cur.fetchall()]
 
             print(f"[Retrieval] Vector: {len(vector_rows)} | BM25: {len(bm25_rows)}")
 
@@ -141,9 +145,9 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
     return [
         (doc, {
             "score": rrf_score,
-            "vector_score": vector_meta.get(doc, bm25_meta.get(doc, {})).get("score", 0.0)
-                            if doc in vector_meta else 0.0,
+            "vector_score": vector_meta[doc]["score"] if doc in vector_meta else 0.0,
             "id": (vector_meta.get(doc) or bm25_meta.get(doc, {})).get("id", ""),
+            "section": (vector_meta.get(doc) or bm25_meta.get(doc, {})).get("section", ""),
         })
         for doc, rrf_score in fused[:top_k]
     ]

@@ -579,6 +579,25 @@ def send_email_report(report: dict, to_email: str = None):
 
 
 # ─────────────────────────────────────────────
+# Ensure section column exists on studio_manual
+# ─────────────────────────────────────────────
+def ensure_section_column(table: str = "studio_manual"):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                ALTER TABLE {table} ADD COLUMN IF NOT EXISTS section TEXT DEFAULT '';
+            """)
+        conn.commit()
+        print(f"[DB] section column ensured on {table}.")
+    except Exception as e:
+        conn.rollback()
+        print(f"[DB] Could not ensure section column (non-fatal): {e}")
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────
 # Insert chunk (for ingestion)
 # ─────────────────────────────────────────────
 def insert_chunk(doc_id: str, text: str, metadata: dict, get_embedding, table: str = "studio_manual"):

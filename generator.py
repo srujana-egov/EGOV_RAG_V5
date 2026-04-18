@@ -77,9 +77,11 @@ Answer questions clearly and accurately using only the provided context.
 
 Guidelines:
 - Answer in plain, friendly language.
-- Use numbered lists for step-by-step instructions, bullet points for feature lists.
-- If information is missing from the context, say so and suggest checking the documentation.
-- Keep answers concise but complete."""
+- If the answer has sequential steps, use a numbered list.
+- If listing features or options, use bullet points.
+- Never use headers (###) — keep responses flat and readable in chat.
+- Max 300 words unless the question genuinely requires more detail.
+- If information is missing from the context, say so and suggest checking the documentation."""
 
 
 def _build_messages(query: str, docs: list, history: list = None) -> list:
@@ -158,7 +160,10 @@ def generate_rag_answer(
 
     docs = []
     for i, (doc, meta) in enumerate(docs_and_meta, start=1):
-        docs.append({"title": meta.get("id", meta.get("title", f"chunk-{i}")), "content": doc})
+        chunk_id = meta.get("id", f"chunk-{i}")
+        section = meta.get("section", "")
+        title = f"{section} / {chunk_id}" if section else chunk_id
+        docs.append({"title": title, "content": doc})
 
     return chat_with_assistant(query, docs, history=history, model=model)
 
@@ -199,7 +204,10 @@ def stream_rag_pipeline(
 
     docs = []
     for i, (doc, meta) in enumerate(docs_and_meta, start=1):
-        docs.append({"title": meta.get("id", meta.get("title", f"chunk-{i}")), "content": doc})
+        chunk_id = meta.get("id", f"chunk-{i}")
+        section = meta.get("section", "")
+        title = f"{section} / {chunk_id}" if section else chunk_id
+        docs.append({"title": title, "content": doc})
 
     yield from stream_rag_answer(query, docs, history=history, model=model)
 

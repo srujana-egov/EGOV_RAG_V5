@@ -16,6 +16,7 @@ from utils import (
     ensure_query_history_table,
     ensure_vote_log_table,
     update_qa_votes_and_promote,
+    ensure_section_column,
 )
 
 # ─────────────────────────────────────────────
@@ -30,6 +31,7 @@ try:
     ensure_query_history_table()
     ensure_vote_log_table()
     ensure_fts_index()
+    ensure_section_column()
 except Exception:
     pass
 
@@ -264,7 +266,7 @@ if query:
                         query=query,
                         hybrid_retrieve_pg=hybrid_retrieve_pg,
                         top_k=8,
-                        model="gpt-4",
+                        model="gpt-4o",
                         history=st.session_state.history,
                     )
                     # Peek at first chunk to detect out-of-domain before streaming
