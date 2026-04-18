@@ -1,7 +1,10 @@
 import os
 import time
+import logging
 from dotenv import load_dotenv
 import openai
+
+logger = logging.getLogger(__name__)
 from tenacity import (
     retry,
     wait_exponential,
@@ -45,7 +48,7 @@ _openai_retry = retry(
 # ─────────────────────────────────────────────
 # Domain detection threshold
 # ─────────────────────────────────────────────
-OUT_OF_DOMAIN_THRESHOLD = 0.35  # cosine similarity below this = out of DIGIT Studio domain
+OUT_OF_DOMAIN_THRESHOLD = float(os.environ.get("OUT_OF_DOMAIN_THRESHOLD", "0.35"))  # cosine similarity below this = out of DIGIT Studio domain
 
 OUT_OF_DOMAIN_MSG = (
     "I'm sorry, that question appears to be outside the scope of DIGIT Studio documentation.\n\n"
@@ -97,14 +100,14 @@ def _call_rewrite(query: str) -> str:
 
 def rewrite_query(query: str) -> str:
     if _is_simple_query(query):
-        print(f"[Query Rewrite] Skipped (short query): '{query}'")
+        logger.info("Query Rewrite: Skipped (short query): '%s'", query)
         return query
     try:
         rewritten = _call_rewrite(query)
-        print(f"[Query Rewrite] '{query}' → '{rewritten}'")
+        logger.info("Query Rewrite: '%s' → '%s'", query, rewritten)
         return rewritten
     except Exception as e:
-        print(f"[Query Rewrite] Failed after retries, using original: {e}")
+        logger.warning("Query Rewrite: Failed after retries, using original: %s", e)
         return query
 
 
@@ -264,7 +267,7 @@ def stream_rag_pipeline(
     if timings is not None:
         timings["top_score"] = round(max_score, 4)
 
-    print(f"[Domain] Max vector score: {max_score:.3f} (threshold={OUT_OF_DOMAIN_THRESHOLD})")
+    logger.info("Domain: Max vector score: %.3f (threshold=%s)", max_score, OUT_OF_DOMAIN_THRESHOLD)
 
     if max_score < OUT_OF_DOMAIN_THRESHOLD:
         yield OUT_OF_DOMAIN_MSG

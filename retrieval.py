@@ -1,6 +1,9 @@
+import logging
 from typing import List, Tuple, Dict
 from utils import get_conn, get_env_var
 import openai
+
+logger = logging.getLogger(__name__)
 from tenacity import (
     retry,
     wait_exponential,
@@ -79,10 +82,10 @@ def ensure_fts_index():
                 ON {TABLE} USING hnsw (embedding vector_cosine_ops);
             """)
         conn.commit()
-        print("[FTS] tsvector column + GIN index ensured.")
+        logger.info("FTS: tsvector column + GIN index ensured.")
     except Exception as e:
         conn.rollback()
-        print(f"[FTS] Could not create FTS index (non-fatal): {e}")
+        logger.warning("FTS: Could not create FTS index (non-fatal): %s", e)
     finally:
         conn.close()
 
@@ -147,7 +150,7 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
             """, (query, query, fetch))
             bm25_rows = [(row[1], {"id": row[0], "section": row[2], "score": row[3]}) for row in cur.fetchall()]
 
-            print(f"[Retrieval] Vector: {len(vector_rows)} | BM25: {len(bm25_rows)}")
+            logger.info("Retrieval: Vector: %d | BM25: %d", len(vector_rows), len(bm25_rows))
 
     finally:
         conn.close()

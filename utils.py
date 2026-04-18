@@ -1,16 +1,28 @@
 import os
 import json
+import logging
 import datetime
 import urllib.request
 import smtplib
 import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import tiktoken
 from typing import Optional, Callable, Any
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+
+def configure_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+configure_logging()
 
 try:
     import psycopg2
@@ -90,7 +102,7 @@ def _get_pool() -> "psycopg2.pool.ThreadedConnectionPool":
                     sslmode="require",
                     connect_timeout=5,
                 )
-                print("[DB] Connection pool initialised (min=2, max=10).")
+                logger.info("DB: Connection pool initialised (min=2, max=10).")
     return _pool
 
 
@@ -100,8 +112,9 @@ class _PooledConnection:
     psycopg2 connection so all existing `conn = get_conn(); conn.close()` code
     continues to work without modification.
     """
-    def __init__(self, conn):
+    def __init__(self, conn, from_pool: bool = True):
         self._conn = conn
+        self._from_pool = from_pool
 
     # ── Delegate the methods callers actually use ──
     def cursor(self):          return self._conn.cursor()
@@ -109,12 +122,15 @@ class _PooledConnection:
     def rollback(self):        return self._conn.rollback()
 
     def close(self):
-        """Return the connection to the pool instead of closing it."""
+        """Return the connection to the pool, or close it directly if not from the pool."""
         try:
-            pool = _get_pool()
-            pool.putconn(self._conn)
+            if self._from_pool:
+                pool = _get_pool()
+                pool.putconn(self._conn)
+            else:
+                self._conn.close()
         except Exception as e:
-            print(f"[DB] Could not return connection to pool: {e}")
+            logger.error("Could not return/close connection: %s", e)
 
     # Allow use as context manager: `with get_conn() as conn:`
     def __enter__(self):       return self
@@ -131,9 +147,9 @@ def get_conn() -> _PooledConnection:
         pool = _get_pool()
         raw = pool.getconn()
         register_vector(raw)
-        return _PooledConnection(raw)
+        return _PooledConnection(raw, from_pool=True)
     except psycopg2.pool.PoolError:
-        print("[DB] Pool exhausted — falling back to direct connection.")
+        logger.warning("Pool exhausted — falling back to direct connection.")
         raw = psycopg2.connect(
             dbname=get_env_var("PGDATABASE"),
             user=get_env_var("PGUSER"),
@@ -144,7 +160,7 @@ def get_conn() -> _PooledConnection:
             connect_timeout=5,
         )
         register_vector(raw)
-        return _PooledConnection(raw)
+        return _PooledConnection(raw, from_pool=False)
 
 
 # ─────────────────────────────────────────────
@@ -176,7 +192,7 @@ def ensure_query_history_table():
                     conn.rollback()
         conn.commit()
     except Exception as e:
-        print(f"[DB] Could not create query_history table: {e}")
+        logger.error("DB: Could not create query_history table: %s", e)
     finally:
         conn.close()
 
@@ -197,7 +213,7 @@ def ensure_vote_log_table():
             """)
         conn.commit()
     except Exception as e:
-        print(f"[DB] Could not create vote_log table: {e}")
+        logger.error("DB: Could not create vote_log table: %s", e)
     finally:
         conn.close()
 
@@ -213,7 +229,7 @@ def log_vote(query: str, answer: str, rating: str):
             """, (query, answer[:500], rating))
         conn.commit()
     except Exception as e:
-        print(f"[VoteLog] Log failed: {e}")
+        logger.error("VoteLog: Log failed: %s", e)
     finally:
         conn.close()
 
@@ -229,7 +245,7 @@ def log_query(query: str, answer: str, source: str,
             """, (query, answer[:500], source, latency_ms, top_score))
         conn.commit()
     except Exception as e:
-        print(f"[QueryHistory] Log failed: {e}")
+        logger.error("QueryHistory: Log failed: %s", e)
     finally:
         conn.close()
 
@@ -250,7 +266,7 @@ def get_query_history(limit: int = 200) -> list:
                 for r in rows
             ]
     except Exception as e:
-        print(f"[QueryHistory] Fetch failed: {e}")
+        logger.error("QueryHistory: Fetch failed: %s", e)
         return []
     finally:
         conn.close()
@@ -273,7 +289,7 @@ def get_flagged_queries() -> list:
                 for r in rows
             ]
     except Exception as e:
-        print(f"[QueryHistory] Flagged fetch failed: {e}")
+        logger.error("QueryHistory: Flagged fetch failed: %s", e)
         return []
     finally:
         conn.close()
@@ -305,7 +321,7 @@ def ensure_feedback_table():
             """)
         conn.commit()
     except Exception as e:
-        print(f"[DB] Could not create feedback table: {e}")
+        logger.error("DB: Could not create feedback table: %s", e)
     finally:
         conn.close()
 
@@ -344,7 +360,7 @@ def ensure_qa_table_full():
                     conn.rollback()
         conn.commit()
     except Exception as e:
-        print(f"[DB] Could not ensure QA table: {e}")
+        logger.error("DB: Could not ensure QA table: %s", e)
     finally:
         conn.close()
 
@@ -362,9 +378,9 @@ def log_feedback(query: str, answer: str, rating: str, source: str = "rag", comm
                 VALUES (%s, %s, %s, %s, %s, %s)
             """, (query, answer[:500], rating, source, comment, is_flagged))
         conn.commit()
-        print(f"[Feedback] {rating} logged (flagged={is_flagged})")
+        logger.info("Feedback: %s logged (flagged=%s)", rating, is_flagged)
     except Exception as e:
-        print(f"[Feedback] DB log failed: {e}")
+        logger.error("Feedback: DB log failed: %s", e)
         _log_feedback_file(query, answer, rating, source, comment)
     finally:
         conn.close()
@@ -433,7 +449,7 @@ def update_qa_votes_and_promote(query: str, answer: str, rating: str) -> bool:
                         updated_at = NOW()
                     WHERE id = %s
                 """, (pos_votes, neg_votes, confidence, existing[0]))
-                print(f"[Votes] Updated existing Q&A confidence to {confidence}")
+                logger.info("Votes: Updated existing Q&A confidence to %s", confidence)
             elif rating == "positive" and pos_votes >= PROMOTION_THRESHOLD:
                 # Auto-promote this RAG answer to the Q&A cache
                 cur.execute("""
@@ -441,12 +457,12 @@ def update_qa_votes_and_promote(query: str, answer: str, rating: str) -> bool:
                         (question, answer, confidence, positive_votes, negative_votes, source)
                     VALUES (%s, %s, %s, %s, %s, 'auto_promoted')
                 """, (query, answer, confidence, pos_votes, neg_votes))
-                print(f"[Promote] Auto-promoted to Q&A cache after {pos_votes} votes: {query[:60]}...")
+                logger.info("Promote: Auto-promoted to Q&A cache after %d votes: %s...", pos_votes, query[:60])
                 promoted = True
 
         conn.commit()
     except Exception as e:
-        print(f"[Votes] Error updating votes: {e}")
+        logger.error("Votes: Error updating votes: %s", e)
     finally:
         conn.close()
     return promoted
@@ -471,7 +487,7 @@ def get_recent_feedback(limit: int = 50) -> list:
                 for r in rows
             ]
     except Exception as e:
-        print(f"[Feedback] Fetch failed: {e}")
+        logger.error("Feedback: Fetch failed: %s", e)
         return []
     finally:
         conn.close()
@@ -501,7 +517,7 @@ def get_feedback_stats() -> dict:
                 "from_rag": row[4] or 0,
             }
     except Exception as e:
-        print(f"[Feedback] Stats failed: {e}")
+        logger.error("Feedback: Stats failed: %s", e)
         return {}
     finally:
         conn.close()
@@ -534,7 +550,7 @@ def get_flagged_feedback_for_report(days: int = 7) -> list:
                 for r in rows
             ]
     except Exception as e:
-        print(f"[Report] Fetch failed: {e}")
+        logger.error("Report: Fetch failed: %s", e)
         return []
     finally:
         conn.close()
@@ -608,10 +624,10 @@ def send_slack_report(webhook_url: str, report: dict):
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            print(f"[Slack] Report sent, status={resp.status}")
+            logger.info("Slack: Report sent, status=%s", resp.status)
             return True
     except Exception as e:
-        print(f"[Slack] Failed to send report: {e}")
+        logger.error("Slack: Failed to send report: %s", e)
         raise
 
 
@@ -680,7 +696,7 @@ def send_email_report(report: dict, to_email: str = None):
         if smtp_user and smtp_pass:
             server.login(smtp_user, smtp_pass)
         server.send_message(msg)
-    print(f"[Email] Report sent to {recipient}")
+    logger.info("Email: Report sent to %s", recipient)
     return True
 
 
@@ -703,10 +719,10 @@ def ensure_section_column(table: str = "studio_manual"):
                 except Exception:
                     conn.rollback()
         conn.commit()
-        print(f"[DB] section / ingested_at / version_tag columns ensured on {table}.")
+        logger.info("DB: section / ingested_at / version_tag columns ensured on %s.", table)
     except Exception as e:
         conn.rollback()
-        print(f"[DB] Could not ensure metadata columns (non-fatal): {e}")
+        logger.warning("DB: Could not ensure metadata columns (non-fatal): %s", e)
     finally:
         conn.close()
 
@@ -734,14 +750,6 @@ def insert_chunk(doc_id: str, text: str, metadata: dict, get_embedding, table: s
         conn.commit()
     finally:
         conn.close()
-
-
-# ─────────────────────────────────────────────
-# Token counting
-# ─────────────────────────────────────────────
-def count_tokens(text: str, model: str = "text-embedding-3-small") -> int:
-    encoding = tiktoken.encoding_for_model(model)
-    return len(encoding.encode(text))
 
 
 def get_required_env(name: str, cast: Optional[Callable[[str], Any]] = None) -> Any:
