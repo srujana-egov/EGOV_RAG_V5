@@ -218,9 +218,11 @@ else:
     query = chat_input
 
 if query:
-    # Append user message
+    # Append user message (cap history at 20 to avoid unbounded growth)
     st.session_state.messages.append({"role": "user", "content": query})
     st.session_state.history.append({"role": "user", "content": query})
+    if len(st.session_state.history) > 20:
+        st.session_state.history = st.session_state.history[-20:]
 
     with st.chat_message("user"):
         st.markdown(query)
@@ -249,25 +251,30 @@ if query:
                 chips = result_data
 
             else:
-                st.write("❌ No close FAQ match (score < 0.65).")
-                st.write("🔎 Step 2: Searching studio_manual (documents + Supademo guide)...")
+                st.write("❌ No close FAQ match (score < 0.68).")
+                st.write("🔎 Step 2: Searching studio_manual documents...")
 
                 # ── STEP 2: RAG pipeline ──
-                full_answer = ""
                 source = "rag"
                 chips = None
+                full_answer = ""
 
                 try:
-                    for chunk in stream_rag_pipeline(
+                    rag_gen = stream_rag_pipeline(
                         query=query,
                         hybrid_retrieve_pg=hybrid_retrieve_pg,
                         top_k=8,
                         model="gpt-4",
                         history=st.session_state.history,
-                    ):
-                        full_answer += chunk
+                    )
+                    # Peek at first chunk to detect out-of-domain before streaming
+                    first_chunk = next(rag_gen, "")
+                    full_answer = first_chunk
 
-                    if full_answer.strip() == OUT_OF_DOMAIN_MSG.strip():
+                    if first_chunk.strip().startswith("I'm sorry, that question appears"):
+                        # Out-of-domain — collect remaining and show static
+                        for chunk in rag_gen:
+                            full_answer += chunk
                         source = "out_of_domain"
                         st.write("⚠️ Query is outside DIGIT Studio scope.")
                         status.update(label="⚠️ Outside domain", state="complete", expanded=False)
@@ -282,7 +289,20 @@ if query:
 
                 answer = full_answer
 
-        st.markdown(answer)
+        if source in ("rag",):
+            # Stream remaining chunks after status closes
+            def _remaining_gen():
+                yield answer  # already have first chunk(s)
+                # rag_gen may still have chunks if we didn't exhaust it above
+                try:
+                    for chunk in rag_gen:
+                        yield chunk
+                except Exception:
+                    pass
+
+            answer = st.write_stream(_remaining_gen())
+        else:
+            st.markdown(answer)
 
         # Render chip buttons immediately after the answer
         if source == "chips" and chips:
@@ -314,5 +334,7 @@ if query:
 
     st.session_state.messages.append(msg_data)
     st.session_state.history.append({"role": "assistant", "content": answer})
+    if len(st.session_state.history) > 20:
+        st.session_state.history = st.session_state.history[-20:]
 
     st.rerun()

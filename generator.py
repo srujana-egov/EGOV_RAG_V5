@@ -52,7 +52,7 @@ def rewrite_query(query: str) -> str:
                         "You are a search query optimizer for a DIGIT Studio documentation chatbot. "
                         "Rewrite the user's question to maximize retrieval of relevant documentation. "
                         "Expand abbreviations, add relevant synonyms, make it more specific. "
-                        "Return ONLY the rewritten query, nothing else."
+                        "Return ONLY the rewritten query, nothing else. 15 words or fewer."
                     )
                 },
                 {"role": "user", "content": query}
@@ -79,7 +79,6 @@ Guidelines:
 - Answer in plain, friendly language.
 - Use numbered lists for step-by-step instructions, bullet points for feature lists.
 - If information is missing from the context, say so and suggest checking the documentation.
-- Always include relevant source URLs at the end under a "For more info, here is an end-to-end demo of DIGIT Studio:" section.
 - Keep answers concise but complete."""
 
 
@@ -91,7 +90,12 @@ def _build_messages(query: str, docs: list, history: list = None) -> list:
     ])
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     if history:
-        messages.extend(history[-6:])
+        # Keep last 6 turns; truncate each entry to 500 chars to avoid token bloat
+        for msg in history[-6:]:
+            messages.append({
+                "role": msg["role"],
+                "content": msg["content"][:500] if len(msg["content"]) > 500 else msg["content"],
+            })
     messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"})
     return messages
 
@@ -154,7 +158,7 @@ def generate_rag_answer(
 
     docs = []
     for i, (doc, meta) in enumerate(docs_and_meta, start=1):
-        docs.append({"title": meta.get("title", f"Chunk {i}"), "content": doc})
+        docs.append({"title": meta.get("id", meta.get("title", f"chunk-{i}")), "content": doc})
 
     return chat_with_assistant(query, docs, history=history, model=model)
 
@@ -195,7 +199,7 @@ def stream_rag_pipeline(
 
     docs = []
     for i, (doc, meta) in enumerate(docs_and_meta, start=1):
-        docs.append({"title": meta.get("title", f"Chunk {i}"), "content": doc})
+        docs.append({"title": meta.get("id", meta.get("title", f"chunk-{i}")), "content": doc})
 
     yield from stream_rag_answer(query, docs, history=history, model=model)
 

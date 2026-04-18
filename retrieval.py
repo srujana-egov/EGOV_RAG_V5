@@ -104,24 +104,24 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
 
             # ── Vector search ──
             cur.execute(f"""
-                SELECT document,
+                SELECT id, document,
                        (1 - (embedding <=> %s::vector)) AS score
                 FROM {TABLE}
                 ORDER BY embedding <=> %s::vector
                 LIMIT %s
             """, (query_embedding, query_embedding, fetch))
-            vector_rows = [(row[0], {"score": row[1]}) for row in cur.fetchall()]
+            vector_rows = [(row[1], {"id": row[0], "score": row[2]}) for row in cur.fetchall()]
 
             # ── BM25 full-text search ──
             cur.execute(f"""
-                SELECT document,
+                SELECT id, document,
                        ts_rank_cd(fts, plainto_tsquery('english', %s)) AS score
                 FROM {TABLE}
                 WHERE fts @@ plainto_tsquery('english', %s)
                 ORDER BY score DESC
                 LIMIT %s
             """, (query, query, fetch))
-            bm25_rows = [(row[0], {"score": row[1]}) for row in cur.fetchall()]
+            bm25_rows = [(row[1], {"id": row[0], "score": row[2]}) for row in cur.fetchall()]
 
             print(f"[Retrieval] Vector: {len(vector_rows)} | BM25: {len(bm25_rows)}")
 
@@ -134,10 +134,16 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
     # ── Fuse with RRF ──
     fused = _rrf(vector_rows, bm25_rows)
 
-    # Preserve original cosine similarity in metadata so domain detection
+    # Preserve original cosine similarity and chunk id in metadata so domain detection
     # in generator.py can use a stable 0-1 score (RRF scores are ~0.01-0.03).
-    vector_scores = {doc: meta["score"] for doc, meta in vector_rows}
+    vector_meta = {doc: meta for doc, meta in vector_rows}
+    bm25_meta = {doc: meta for doc, meta in bm25_rows}
     return [
-        (doc, {"score": rrf_score, "vector_score": vector_scores.get(doc, 0.0)})
+        (doc, {
+            "score": rrf_score,
+            "vector_score": vector_meta.get(doc, bm25_meta.get(doc, {})).get("score", 0.0)
+                            if doc in vector_meta else 0.0,
+            "id": (vector_meta.get(doc) or bm25_meta.get(doc, {})).get("id", ""),
+        })
         for doc, rrf_score in fused[:top_k]
     ]
