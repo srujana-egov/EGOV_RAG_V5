@@ -25,7 +25,7 @@ except ImportError:
 # ─────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────
-PROMOTION_THRESHOLD = 5  # positive votes before auto-promoting RAG answer to Q&A cache
+PROMOTION_THRESHOLD = 3  # positive votes before auto-promoting RAG answer to Q&A cache
 
 
 # ─────────────────────────────────────────────
@@ -285,16 +285,19 @@ def _log_feedback_file(query: str, answer: str, rating: str, source: str, commen
 # ─────────────────────────────────────────────
 # Vote tracking + auto-promotion to Q&A cache
 # ─────────────────────────────────────────────
-def update_qa_votes_and_promote(query: str, answer: str, rating: str):
+def update_qa_votes_and_promote(query: str, answer: str, rating: str) -> bool:
     """
     Track votes per query. On positive rating:
     - Count all positive/negative feedback for this exact query
     - If positive_votes >= PROMOTION_THRESHOLD, auto-promote to predetermined_qa
     - Update confidence for entries already in the cache
+
+    Returns True if a new auto-promotion happened, False otherwise.
     """
     if not query or not answer:
-        return
+        return False
 
+    promoted = False
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -338,12 +341,14 @@ def update_qa_votes_and_promote(query: str, answer: str, rating: str):
                     VALUES (%s, %s, %s, %s, %s, 'auto_promoted')
                 """, (query, answer, confidence, pos_votes, neg_votes))
                 print(f"[Promote] Auto-promoted to Q&A cache after {pos_votes} votes: {query[:60]}...")
+                promoted = True
 
         conn.commit()
     except Exception as e:
         print(f"[Votes] Error updating votes: {e}")
     finally:
         conn.close()
+    return promoted
 
 
 # ─────────────────────────────────────────────

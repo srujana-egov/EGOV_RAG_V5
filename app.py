@@ -172,7 +172,9 @@ for i, msg in enumerate(st.session_state.messages):
 
             # Source badge
             if source == "cache":
-                st.caption("⚡ Instant answer")
+                conf = msg.get("faq_confidence")
+                conf_pct = f" · {conf:.0%} match" if conf else ""
+                st.caption(f"⚡ Instant answer{conf_pct}")
 
             if source == "rag" and msg.get("sources"):
                 with st.expander("📚 Sources used", expanded=False):
@@ -189,11 +191,13 @@ for i, msg in enumerate(st.session_state.messages):
                         if st.button("👍", key=f"up_{i}", help="This was helpful"):
                             # Positive votes go to vote_log only (not bot_feedback)
                             log_vote(msg.get("query", ""), msg["content"], "positive")
-                            update_qa_votes_and_promote(
+                            promoted = update_qa_votes_and_promote(
                                 msg.get("query", ""), msg["content"], "positive"
                             )
                             _load_qa_cache.clear()
                             _load_faq_embeddings.clear()
+                            if promoted:
+                                st.toast("🚀 This answer has been added to the instant FAQ cache!", icon="⚡")
                             st.session_state.messages[i]["feedback"] = "positive"
                             st.rerun()
                     with col2:
@@ -238,6 +242,7 @@ if query:
     with st.chat_message("assistant"):
         sources = []
 
+        faq_confidence = None
         with st.status("Thinking...", expanded=True) as status:
 
             # ── STEP 1: Semantic FAQ search ──
@@ -251,6 +256,7 @@ if query:
                 answer = result_data["answer"]
                 source = "cache"
                 chips = None
+                faq_confidence = result_data["confidence"]
 
             elif result_type == "chips":
                 st.write("💡 Found similar questions — showing suggestions.")
@@ -323,7 +329,8 @@ if query:
                     st.rerun()
 
         if source == "cache":
-            st.caption("⚡ Instant answer")
+            conf_pct = f" · {faq_confidence:.0%} match" if faq_confidence else ""
+            st.caption(f"⚡ Instant answer{conf_pct}")
 
         if source == "rag" and sources:
             with st.expander("📚 Sources used", expanded=False):
@@ -344,6 +351,7 @@ if query:
         "query": query,
         "source": source,
         "feedback": None,
+        "faq_confidence": faq_confidence,
     }
     if chips:
         msg_data["chips"] = chips
