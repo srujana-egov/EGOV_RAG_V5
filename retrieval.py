@@ -133,4 +133,11 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
 
     # ── Fuse with RRF ──
     fused = _rrf(vector_rows, bm25_rows)
-    return [(doc, {"score": score}) for doc, score in fused[:top_k]]
+
+    # Preserve original cosine similarity in metadata so domain detection
+    # in generator.py can use a stable 0-1 score (RRF scores are ~0.01-0.03).
+    vector_scores = {doc: meta["score"] for doc, meta in vector_rows}
+    return [
+        (doc, {"score": rrf_score, "vector_score": vector_scores.get(doc, 0.0)})
+        for doc, rrf_score in fused[:top_k]
+    ]

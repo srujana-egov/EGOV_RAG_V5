@@ -145,7 +145,10 @@ def generate_rag_answer(
     if not docs_and_meta:
         return OUT_OF_DOMAIN_MSG
 
-    max_score = max(meta.get("score", 0) for _, meta in docs_and_meta)
+    max_score = max(
+        meta.get("vector_score", meta.get("score", 0))
+        for _, meta in docs_and_meta
+    )
     if max_score < OUT_OF_DOMAIN_THRESHOLD:
         return OUT_OF_DOMAIN_MSG
 
@@ -178,9 +181,13 @@ def stream_rag_pipeline(
         yield OUT_OF_DOMAIN_MSG
         return
 
-    # Check best similarity score
-    max_score = max(meta.get("score", 0) for _, meta in docs_and_meta)
-    print(f"[Domain] Max retrieval score: {max_score:.3f} (threshold={OUT_OF_DOMAIN_THRESHOLD})")
+    # Use vector_score (cosine similarity, 0-1) for domain detection.
+    # RRF scores are ~0.01-0.03 and would break the 0.35 threshold check.
+    max_score = max(
+        meta.get("vector_score", meta.get("score", 0))
+        for _, meta in docs_and_meta
+    )
+    print(f"[Domain] Max vector score: {max_score:.3f} (threshold={OUT_OF_DOMAIN_THRESHOLD})")
 
     if max_score < OUT_OF_DOMAIN_THRESHOLD:
         yield OUT_OF_DOMAIN_MSG

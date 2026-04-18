@@ -107,14 +107,14 @@ def semantic_faq_search(query: str):
 
     top_score = scored[0][1] if scored else 0.0
 
-    if top_score > 0.85:
+    if top_score > 0.80:
         item, score = scored[0]
         return ("direct", {"id": item["id"], "answer": item["answer"], "confidence": score})
 
-    if top_score >= 0.65:
+    if top_score >= 0.68:
         # Only include chips that are individually relevant (within 0.10 of top score
         # and above a minimum threshold), so we don't pad with loosely related questions.
-        min_chip_score = max(0.65, top_score - 0.10)
+        min_chip_score = max(0.68, top_score - 0.10)
         chips = [
             {"question": item["question"], "answer": item["answer"], "score": score}
             for item, score in scored[:3]
@@ -261,7 +261,7 @@ if query:
                     for chunk in stream_rag_pipeline(
                         query=query,
                         hybrid_retrieve_pg=hybrid_retrieve_pg,
-                        top_k=5,
+                        top_k=8,
                         model="gpt-4",
                         history=st.session_state.history,
                     ):
