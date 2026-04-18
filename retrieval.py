@@ -1,6 +1,12 @@
 from typing import List, Tuple, Dict
 from utils import get_conn, get_env_var
 import openai
+from tenacity import (
+    retry,
+    wait_exponential,
+    stop_after_attempt,
+    retry_if_exception_type,
+)
 
 _client = None
 
@@ -13,10 +19,23 @@ def _get_client():
 
 TABLE = get_env_var("DB_TABLE", "studio_manual")
 
+# Shared retry decorator for embedding API calls
+_embed_retry = retry(
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((
+        openai.RateLimitError,
+        openai.APIStatusError,
+        openai.APIConnectionError,
+    )),
+    reraise=True,
+)
+
 
 # ─────────────────────────────────────────────
 # Embedding
 # ─────────────────────────────────────────────
+@_embed_retry
 def get_embedding(text: str) -> List[float]:
     resp = _get_client().embeddings.create(
         model="text-embedding-3-small",
@@ -25,6 +44,7 @@ def get_embedding(text: str) -> List[float]:
     return resp.data[0].embedding
 
 
+@_embed_retry
 def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
     """Embed multiple texts in a single API call (preserves order)."""
     resp = _get_client().embeddings.create(

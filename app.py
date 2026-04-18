@@ -2,12 +2,14 @@
 DIGIT Studio Support Bot
 """
 
+import time
 import streamlit as st
 from generator import stream_rag_pipeline, OUT_OF_DOMAIN_MSG
 from retrieval import hybrid_retrieve_pg, get_embedding, get_embeddings_batch, ensure_fts_index
 
 from utils import (
     get_conn,
+    get_env_var,
     log_feedback,
     log_query,
     log_vote,
@@ -23,6 +25,54 @@ from utils import (
 # Page config
 # ─────────────────────────────────────────────
 st.set_page_config(page_title="DIGIT Studio Assistant", page_icon="🛠️", layout="wide")
+
+# ─────────────────────────────────────────────
+# Auth gate — password protect the app
+# Set APP_PASSWORD env var (or Streamlit secret) to enable.
+# Leave unset to run without auth (dev mode).
+# ─────────────────────────────────────────────
+_APP_PASSWORD = get_env_var("APP_PASSWORD", "")
+
+if _APP_PASSWORD:
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if not st.session_state.authenticated:
+        st.title("🔒 DIGIT Studio Assistant")
+        with st.form("login_form"):
+            pwd = st.text_input("Enter access password", type="password")
+            submitted = st.form_submit_button("Login")
+        if submitted:
+            if pwd == _APP_PASSWORD:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Incorrect password. Please try again.")
+        st.stop()   # halt rendering until authenticated
+
+# ─────────────────────────────────────────────
+# Per-session rate limiter
+# Limits: MAX_QUERIES_PER_WINDOW queries per RATE_WINDOW_SECONDS
+# Defaults: 20 queries / 60 seconds (override via env vars)
+# ─────────────────────────────────────────────
+_RATE_WINDOW = int(get_env_var("RATE_WINDOW_SECONDS", "60"))
+_RATE_MAX    = int(get_env_var("MAX_QUERIES_PER_WINDOW", "20"))
+
+if "rate_timestamps" not in st.session_state:
+    st.session_state.rate_timestamps = []
+
+def _check_rate_limit() -> bool:
+    """Return True if the request is allowed, False if rate-limited."""
+    now = time.time()
+    # Drop timestamps outside the current window
+    st.session_state.rate_timestamps = [
+        t for t in st.session_state.rate_timestamps
+        if now - t < _RATE_WINDOW
+    ]
+    if len(st.session_state.rate_timestamps) >= _RATE_MAX:
+        return False
+    st.session_state.rate_timestamps.append(now)
+    return True
 
 # Ensure DB tables and indexes exist
 try:
@@ -230,6 +280,14 @@ else:
     query = chat_input
 
 if query:
+    # ── Rate limit check ──
+    if not _check_rate_limit():
+        st.warning(
+            f"⏳ You've sent too many messages. Please wait a moment before asking again. "
+            f"(Limit: {_RATE_MAX} messages per {_RATE_WINDOW}s)"
+        )
+        st.stop()
+
     # Append user message (cap history at 20 to avoid unbounded growth)
     st.session_state.messages.append({"role": "user", "content": query})
     st.session_state.history.append({"role": "user", "content": query})
@@ -241,8 +299,10 @@ if query:
 
     with st.chat_message("assistant"):
         sources = []
-
+        timings = {}           # populated by stream_rag_pipeline
         faq_confidence = None
+        t_query_start = time.perf_counter()
+
         with st.status("Thinking...", expanded=True) as status:
 
             # ── STEP 1: Semantic FAQ search ──
@@ -282,6 +342,7 @@ if query:
                         model="gpt-4o",
                         history=st.session_state.history,
                         collected_sources=sources,
+                        timings=timings,
                     )
                     # Peek at first chunk to detect out-of-domain before streaming
                     first_chunk = next(rag_gen, "")
@@ -298,8 +359,9 @@ if query:
                         st.write("✅ Relevant content found — generating answer.")
                         status.update(label="✅ Answered from docs", state="complete", expanded=False)
 
-                except Exception:
-                    full_answer = "Something went wrong. Please try again."
+                except Exception as e:
+                    full_answer = str(e) if "temporarily unavailable" in str(e) \
+                        else "Something went wrong. Please try again."
                     source = "error"
                     status.update(label="❌ Error", state="error", expanded=False)
 
@@ -307,9 +369,10 @@ if query:
 
         if source in ("rag",):
             # Stream remaining chunks after status closes
+            t_stream_start = time.perf_counter()
+
             def _remaining_gen():
                 yield answer  # already have first chunk(s)
-                # rag_gen may still have chunks if we didn't exhaust it above
                 try:
                     for chunk in rag_gen:
                         yield chunk
@@ -317,8 +380,22 @@ if query:
                     pass
 
             answer = st.write_stream(_remaining_gen())
+            timings["generate_ms"] = int((time.perf_counter() - t_stream_start) * 1000)
         else:
             st.markdown(answer)
+
+        # ── Latency caption (RAG answers only) ──
+        if source == "rag" and timings:
+            rewrite_ms  = timings.get("rewrite_ms", 0)
+            retrieve_ms = timings.get("retrieve_ms", 0)
+            generate_ms = timings.get("generate_ms", 0)
+            total_ms    = int((time.perf_counter() - t_query_start) * 1000)
+            print(f"[Latency] rewrite={rewrite_ms}ms retrieve={retrieve_ms}ms "
+                  f"generate={generate_ms}ms total={total_ms}ms")
+            st.caption(
+                f"⏱ Rewrite {rewrite_ms}ms · Retrieve {retrieve_ms}ms · "
+                f"Generate {generate_ms}ms · Total {total_ms}ms"
+            )
 
         # Render chip buttons immediately after the answer
         if source == "chips" and chips:
@@ -338,9 +415,11 @@ if query:
                     label = f"{s['section']} / {s['id']}" if s.get('section') else s['id']
                     st.caption(label)
 
-    # Log every query + answer to query_history
+    # Log every query + answer to query_history (with latency + top_score)
     try:
-        log_query(query, answer, source)
+        total_ms   = int((time.perf_counter() - t_query_start) * 1000)
+        top_score  = timings.get("top_score")
+        log_query(query, answer, source, latency_ms=total_ms, top_score=top_score)
     except Exception:
         pass
 

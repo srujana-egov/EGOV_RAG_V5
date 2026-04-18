@@ -1,6 +1,13 @@
 import os
+import time
 from dotenv import load_dotenv
 import openai
+from tenacity import (
+    retry,
+    wait_exponential,
+    stop_after_attempt,
+    retry_if_exception_type,
+)
 
 load_dotenv()
 
@@ -12,11 +19,27 @@ _client = None
 def _get_client() -> openai.OpenAI:
     global _client
     if _client is None:
-        api_key = os.environ.get("OPENAI_API_KEY")
+        from utils import get_env_var
+        api_key = get_env_var("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY missing.")
         _client = openai.OpenAI(api_key=api_key)
     return _client
+
+
+# ─────────────────────────────────────────────
+# Retry decorator — covers RateLimitError and transient 5xx errors
+# ─────────────────────────────────────────────
+_openai_retry = retry(
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((
+        openai.RateLimitError,
+        openai.APIStatusError,
+        openai.APIConnectionError,
+    )),
+    reraise=True,
+)
 
 
 # ─────────────────────────────────────────────
@@ -39,32 +62,49 @@ OUT_OF_DOMAIN_MSG = (
 
 
 # ─────────────────────────────────────────────
-# Query rewriting (gpt-3.5-turbo — cheaper, fine for this task)
+# Query rewriting — skips GPT call for simple short queries
 # ─────────────────────────────────────────────
+def _is_simple_query(query: str) -> bool:
+    """
+    Return True if the query is already short and clean — no need to rewrite.
+    Heuristic: ≤5 words AND ≤50 characters.
+    """
+    words = query.strip().split()
+    return len(words) <= 5 and len(query.strip()) <= 50
+
+
+@_openai_retry
+def _call_rewrite(query: str) -> str:
+    response = _get_client().chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a search query optimizer for a DIGIT Studio documentation chatbot. "
+                    "Rewrite the user's question to maximize retrieval of relevant documentation. "
+                    "Expand abbreviations, add relevant synonyms, make it more specific. "
+                    "Return ONLY the rewritten query, nothing else. 15 words or fewer."
+                )
+            },
+            {"role": "user", "content": query}
+        ],
+        max_tokens=100,
+        temperature=0.0
+    )
+    return response.choices[0].message.content.strip()
+
+
 def rewrite_query(query: str) -> str:
+    if _is_simple_query(query):
+        print(f"[Query Rewrite] Skipped (short query): '{query}'")
+        return query
     try:
-        response = _get_client().chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a search query optimizer for a DIGIT Studio documentation chatbot. "
-                        "Rewrite the user's question to maximize retrieval of relevant documentation. "
-                        "Expand abbreviations, add relevant synonyms, make it more specific. "
-                        "Return ONLY the rewritten query, nothing else. 15 words or fewer."
-                    )
-                },
-                {"role": "user", "content": query}
-            ],
-            max_tokens=100,
-            temperature=0.0
-        )
-        rewritten = response.choices[0].message.content.strip()
+        rewritten = _call_rewrite(query)
         print(f"[Query Rewrite] '{query}' → '{rewritten}'")
         return rewritten
     except Exception as e:
-        print(f"[Query Rewrite] Failed, using original: {e}")
+        print(f"[Query Rewrite] Failed after retries, using original: {e}")
         return query
 
 
@@ -105,6 +145,7 @@ def _build_messages(query: str, docs: list, history: list = None) -> list:
 # ─────────────────────────────────────────────
 # Non-streaming answer (fallback)
 # ─────────────────────────────────────────────
+@_openai_retry
 def chat_with_assistant(query: str, docs: list, history: list = None, model: str = "gpt-4") -> str:
     messages = _build_messages(query, docs, history)
     response = _get_client().chat.completions.create(
@@ -122,13 +163,22 @@ def chat_with_assistant(query: str, docs: list, history: list = None, model: str
 def stream_rag_answer(query: str, docs: list, history: list = None, model: str = "gpt-4"):
     messages = _build_messages(query, docs, history)
 
-    stream = _get_client().chat.completions.create(
-        model=model,
-        messages=messages,
-        max_tokens=2000,
-        temperature=0.2,
-        stream=True,
-    )
+    # Retry wraps the *creation* call only — not the iteration
+    @_openai_retry
+    def _create_stream():
+        return _get_client().chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=2000,
+            temperature=0.2,
+            stream=True,
+        )
+
+    try:
+        stream = _create_stream()
+    except Exception as e:
+        raise RuntimeError("OpenAI service temporarily unavailable. Please try again in a moment.") from e
+
     for chunk in stream:
         content = chunk.choices[0].delta.content
         if content:
@@ -178,13 +228,28 @@ def stream_rag_pipeline(
     model: str = "gpt-4",
     history: list = None,
     collected_sources: list = None,
+    timings: dict = None,          # Optional — populated with per-phase ms if provided
 ):
     """
     Generator that rewrites query, retrieves docs, checks domain, then streams the answer.
     Yields str chunks. If out-of-domain, yields the OUT_OF_DOMAIN_MSG as a single chunk.
+
+    If `timings` dict is provided it will be populated with:
+        timings['rewrite_ms']   — query rewrite latency
+        timings['retrieve_ms']  — hybrid retrieval latency
+        timings['top_score']    — max cosine similarity of retrieved docs
     """
+    # ── Phase 1: Query rewrite ──
+    t0 = time.perf_counter()
     rewritten = rewrite_query(query)
+    if timings is not None:
+        timings["rewrite_ms"] = int((time.perf_counter() - t0) * 1000)
+
+    # ── Phase 2: Retrieval ──
+    t1 = time.perf_counter()
     docs_and_meta = hybrid_retrieve_pg(rewritten, top_k)
+    if timings is not None:
+        timings["retrieve_ms"] = int((time.perf_counter() - t1) * 1000)
 
     # No results at all → out of domain
     if not docs_and_meta:
@@ -192,11 +257,13 @@ def stream_rag_pipeline(
         return
 
     # Use vector_score (cosine similarity, 0-1) for domain detection.
-    # RRF scores are ~0.01-0.03 and would break the 0.35 threshold check.
     max_score = max(
         meta.get("vector_score", meta.get("score", 0))
         for _, meta in docs_and_meta
     )
+    if timings is not None:
+        timings["top_score"] = round(max_score, 4)
+
     print(f"[Domain] Max vector score: {max_score:.3f} (threshold={OUT_OF_DOMAIN_THRESHOLD})")
 
     if max_score < OUT_OF_DOMAIN_THRESHOLD:
