@@ -180,6 +180,63 @@ def semantic_faq_search(query: str):
 
 
 # ─────────────────────────────────────────────
+# Contextual query resolution
+# Handles short/ambiguous follow-ups using conversation history
+# ─────────────────────────────────────────────
+_NEGATIVE_REPLIES = {"no", "nope", "none", "neither", "n", "nah", "not really", "no thanks"}
+
+
+def _resolve_effective_query(query: str, messages: list) -> str:
+    """
+    Return the best query to actually search for, given conversation context.
+
+    Cases handled:
+    1. Negative reply ("no", "nope", etc.) after chips → use the original user question
+       so we fall through to RAG instead of dead-ending with an out-of-domain message.
+    2. Short follow-up (≤5 words) after any exchange → prepend the last substantive
+       user question for context (e.g. "tell me more" → "what is digit studio tell me more").
+    3. Everything else → use the query unchanged.
+    """
+    q = query.strip()
+    words = q.split()
+
+    if len(words) > 5:
+        return q  # long enough to stand alone
+
+    normalised = q.lower().rstrip(".,!?")
+
+    # ── Case 1: negative reply after chips ──
+    last_assistant = next(
+        (m for m in reversed(messages) if m["role"] == "assistant"), None
+    )
+    if last_assistant and last_assistant.get("source") == "chips":
+        if normalised in _NEGATIVE_REPLIES:
+            # Find the last non-trivial user message (not the "no" itself)
+            original = next(
+                (m["content"] for m in reversed(messages)
+                 if m["role"] == "user"
+                 and m["content"].strip().lower().rstrip(".,!?") != normalised
+                 and len(m["content"].strip().split()) > 3),
+                None,
+            )
+            if original:
+                return original  # re-run original question through RAG
+
+    # ── Case 2: short follow-up — prepend last substantive user question ──
+    last_substantive = next(
+        (m["content"] for m in reversed(messages)
+         if m["role"] == "user"
+         and m["content"].strip().lower().rstrip(".,!?") != normalised
+         and len(m["content"].strip().split()) > 5),
+        None,
+    )
+    if last_substantive:
+        return f"{last_substantive} {q}"
+
+    return q
+
+
+# ─────────────────────────────────────────────
 # Session state init
 # ─────────────────────────────────────────────
 if "history" not in st.session_state:
@@ -305,10 +362,18 @@ if query:
 
         with st.status("Thinking...", expanded=True) as status:
 
+            # ── Contextual query resolution ──
+            # Expand/replace short or ambiguous follow-ups using conversation history
+            effective_query = _resolve_effective_query(
+                query, st.session_state.messages[:-1]  # exclude the just-appended user msg
+            )
+            if effective_query != query:
+                print(f"[QueryResolve] '{query}' → '{effective_query}'")
+
             # ── STEP 1: Semantic FAQ search ──
             n_faq = len(_load_qa_cache())
             st.write(f"🔎 Step 1: Semantic search across {n_faq} FAQ entries...")
-            result_type, result_data = semantic_faq_search(query)
+            result_type, result_data = semantic_faq_search(effective_query)
 
             if result_type == "direct":
                 st.write("✅ High-confidence FAQ match — returning instant answer.")
@@ -336,7 +401,7 @@ if query:
 
                 try:
                     rag_gen = stream_rag_pipeline(
-                        query=query,
+                        query=effective_query,
                         hybrid_retrieve_pg=hybrid_retrieve_pg,
                         top_k=8,
                         model="gpt-4o",
