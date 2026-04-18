@@ -2,12 +2,14 @@
 DIGIT Studio Support Bot
 """
 
+import time
 import streamlit as st
 from generator import stream_rag_pipeline, OUT_OF_DOMAIN_MSG
-from retrieval import hybrid_retrieve_pg, get_embedding, get_embeddings_batch
+from retrieval import hybrid_retrieve_pg, get_embedding, get_embeddings_batch, ensure_fts_index
 
 from utils import (
     get_conn,
+    get_env_var,
     log_feedback,
     log_query,
     log_vote,
@@ -16,6 +18,7 @@ from utils import (
     ensure_query_history_table,
     ensure_vote_log_table,
     update_qa_votes_and_promote,
+    ensure_section_column,
 )
 
 # ─────────────────────────────────────────────
@@ -23,12 +26,62 @@ from utils import (
 # ─────────────────────────────────────────────
 st.set_page_config(page_title="DIGIT Studio Assistant", page_icon="🛠️", layout="wide")
 
-# Ensure DB tables exist
+# ─────────────────────────────────────────────
+# Auth gate — password protect the app
+# Set APP_PASSWORD env var (or Streamlit secret) to enable.
+# Leave unset to run without auth (dev mode).
+# ─────────────────────────────────────────────
+_APP_PASSWORD = get_env_var("APP_PASSWORD", "")
+
+if _APP_PASSWORD:
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if not st.session_state.authenticated:
+        st.title("🔒 DIGIT Studio Assistant")
+        with st.form("login_form"):
+            pwd = st.text_input("Enter access password", type="password")
+            submitted = st.form_submit_button("Login")
+        if submitted:
+            if pwd == _APP_PASSWORD:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Incorrect password. Please try again.")
+        st.stop()   # halt rendering until authenticated
+
+# ─────────────────────────────────────────────
+# Per-session rate limiter
+# Limits: MAX_QUERIES_PER_WINDOW queries per RATE_WINDOW_SECONDS
+# Defaults: 20 queries / 60 seconds (override via env vars)
+# ─────────────────────────────────────────────
+_RATE_WINDOW = int(get_env_var("RATE_WINDOW_SECONDS", "60"))
+_RATE_MAX    = int(get_env_var("MAX_QUERIES_PER_WINDOW", "20"))
+
+if "rate_timestamps" not in st.session_state:
+    st.session_state.rate_timestamps = []
+
+def _check_rate_limit() -> bool:
+    """Return True if the request is allowed, False if rate-limited."""
+    now = time.time()
+    # Drop timestamps outside the current window
+    st.session_state.rate_timestamps = [
+        t for t in st.session_state.rate_timestamps
+        if now - t < _RATE_WINDOW
+    ]
+    if len(st.session_state.rate_timestamps) >= _RATE_MAX:
+        return False
+    st.session_state.rate_timestamps.append(now)
+    return True
+
+# Ensure DB tables and indexes exist
 try:
     ensure_feedback_table()
     ensure_qa_table_full()
     ensure_query_history_table()
     ensure_vote_log_table()
+    ensure_fts_index()
+    ensure_section_column()
 except Exception:
     pass
 
@@ -106,14 +159,14 @@ def semantic_faq_search(query: str):
 
     top_score = scored[0][1] if scored else 0.0
 
-    if top_score > 0.85:
+    if top_score > 0.80:
         item, score = scored[0]
         return ("direct", {"id": item["id"], "answer": item["answer"], "confidence": score})
 
-    if top_score >= 0.65:
+    if top_score >= 0.68:
         # Only include chips that are individually relevant (within 0.10 of top score
         # and above a minimum threshold), so we don't pad with loosely related questions.
-        min_chip_score = max(0.65, top_score - 0.10)
+        min_chip_score = max(0.68, top_score - 0.10)
         chips = [
             {"question": item["question"], "answer": item["answer"], "score": score}
             for item, score in scored[:3]
@@ -124,6 +177,63 @@ def semantic_faq_search(query: str):
         return ("chips", chips)
 
     return ("rag", None)
+
+
+# ─────────────────────────────────────────────
+# Contextual query resolution
+# Handles short/ambiguous follow-ups using conversation history
+# ─────────────────────────────────────────────
+_NEGATIVE_REPLIES = {"no", "nope", "none", "neither", "n", "nah", "not really", "no thanks"}
+
+
+def _resolve_effective_query(query: str, messages: list) -> str:
+    """
+    Return the best query to actually search for, given conversation context.
+
+    Cases handled:
+    1. Negative reply ("no", "nope", etc.) after chips → use the original user question
+       so we fall through to RAG instead of dead-ending with an out-of-domain message.
+    2. Short follow-up (≤5 words) after any exchange → prepend the last substantive
+       user question for context (e.g. "tell me more" → "what is digit studio tell me more").
+    3. Everything else → use the query unchanged.
+    """
+    q = query.strip()
+    words = q.split()
+
+    if len(words) > 5:
+        return q  # long enough to stand alone
+
+    normalised = q.lower().rstrip(".,!?")
+
+    # ── Case 1: negative reply after chips ──
+    last_assistant = next(
+        (m for m in reversed(messages) if m["role"] == "assistant"), None
+    )
+    if last_assistant and last_assistant.get("source") == "chips":
+        if normalised in _NEGATIVE_REPLIES:
+            # Find the last non-trivial user message (not the "no" itself)
+            original = next(
+                (m["content"] for m in reversed(messages)
+                 if m["role"] == "user"
+                 and m["content"].strip().lower().rstrip(".,!?") != normalised
+                 and len(m["content"].strip().split()) > 3),
+                None,
+            )
+            if original:
+                return original  # re-run original question through RAG
+
+    # ── Case 2: short follow-up — prepend last substantive user question ──
+    last_substantive = next(
+        (m["content"] for m in reversed(messages)
+         if m["role"] == "user"
+         and m["content"].strip().lower().rstrip(".,!?") != normalised
+         and len(m["content"].strip().split()) > 5),
+        None,
+    )
+    if last_substantive:
+        return f"{last_substantive} {q}"
+
+    return q
 
 
 # ─────────────────────────────────────────────
@@ -169,7 +279,15 @@ for i, msg in enumerate(st.session_state.messages):
 
             # Source badge
             if source == "cache":
-                st.caption("⚡ Instant answer")
+                conf = msg.get("faq_confidence")
+                conf_pct = f" · {conf:.0%} match" if conf else ""
+                st.caption(f"⚡ Instant answer{conf_pct}")
+
+            if source == "rag" and msg.get("sources"):
+                with st.expander("📚 Sources used", expanded=False):
+                    for s in msg["sources"]:
+                        label = f"{s['section']} / {s['id']}" if s.get('section') else s['id']
+                        st.caption(label)
 
             # Feedback buttons — only for cache/rag answers, not chips/out-of-domain
             if source in ("cache", "rag"):
@@ -180,11 +298,13 @@ for i, msg in enumerate(st.session_state.messages):
                         if st.button("👍", key=f"up_{i}", help="This was helpful"):
                             # Positive votes go to vote_log only (not bot_feedback)
                             log_vote(msg.get("query", ""), msg["content"], "positive")
-                            update_qa_votes_and_promote(
+                            promoted = update_qa_votes_and_promote(
                                 msg.get("query", ""), msg["content"], "positive"
                             )
                             _load_qa_cache.clear()
                             _load_faq_embeddings.clear()
+                            if promoted:
+                                st.toast("🚀 This answer has been added to the instant FAQ cache!", icon="⚡")
                             st.session_state.messages[i]["feedback"] = "positive"
                             st.rerun()
                     with col2:
@@ -217,21 +337,43 @@ else:
     query = chat_input
 
 if query:
-    # Append user message
+    # ── Rate limit check ──
+    if not _check_rate_limit():
+        st.warning(
+            f"⏳ You've sent too many messages. Please wait a moment before asking again. "
+            f"(Limit: {_RATE_MAX} messages per {_RATE_WINDOW}s)"
+        )
+        st.stop()
+
+    # Append user message (cap history at 20 to avoid unbounded growth)
     st.session_state.messages.append({"role": "user", "content": query})
     st.session_state.history.append({"role": "user", "content": query})
+    if len(st.session_state.history) > 20:
+        st.session_state.history = st.session_state.history[-20:]
 
     with st.chat_message("user"):
         st.markdown(query)
 
     with st.chat_message("assistant"):
+        sources = []
+        timings = {}           # populated by stream_rag_pipeline
+        faq_confidence = None
+        t_query_start = time.perf_counter()
 
         with st.status("Thinking...", expanded=True) as status:
+
+            # ── Contextual query resolution ──
+            # Expand/replace short or ambiguous follow-ups using conversation history
+            effective_query = _resolve_effective_query(
+                query, st.session_state.messages[:-1]  # exclude the just-appended user msg
+            )
+            if effective_query != query:
+                print(f"[QueryResolve] '{query}' → '{effective_query}'")
 
             # ── STEP 1: Semantic FAQ search ──
             n_faq = len(_load_qa_cache())
             st.write(f"🔎 Step 1: Semantic search across {n_faq} FAQ entries...")
-            result_type, result_data = semantic_faq_search(query)
+            result_type, result_data = semantic_faq_search(effective_query)
 
             if result_type == "direct":
                 st.write("✅ High-confidence FAQ match — returning instant answer.")
@@ -239,6 +381,7 @@ if query:
                 answer = result_data["answer"]
                 source = "cache"
                 chips = None
+                faq_confidence = result_data["confidence"]
 
             elif result_type == "chips":
                 st.write("💡 Found similar questions — showing suggestions.")
@@ -248,25 +391,32 @@ if query:
                 chips = result_data
 
             else:
-                st.write("❌ No close FAQ match (score < 0.65).")
-                st.write("🔎 Step 2: Searching studio_manual (documents + Supademo guide)...")
+                st.write("❌ No close FAQ match (score < 0.68).")
+                st.write("🔎 Step 2: Searching studio_manual documents...")
 
                 # ── STEP 2: RAG pipeline ──
-                full_answer = ""
                 source = "rag"
                 chips = None
+                full_answer = ""
 
                 try:
-                    for chunk in stream_rag_pipeline(
-                        query=query,
+                    rag_gen = stream_rag_pipeline(
+                        query=effective_query,
                         hybrid_retrieve_pg=hybrid_retrieve_pg,
-                        top_k=5,
-                        model="gpt-4",
+                        top_k=8,
+                        model="gpt-4o",
                         history=st.session_state.history,
-                    ):
-                        full_answer += chunk
+                        collected_sources=sources,
+                        timings=timings,
+                    )
+                    # Peek at first chunk to detect out-of-domain before streaming
+                    first_chunk = next(rag_gen, "")
+                    full_answer = first_chunk
 
-                    if full_answer.strip() == OUT_OF_DOMAIN_MSG.strip():
+                    if first_chunk.strip().startswith("I'm sorry, that question appears"):
+                        # Out-of-domain — collect remaining and show static
+                        for chunk in rag_gen:
+                            full_answer += chunk
                         source = "out_of_domain"
                         st.write("⚠️ Query is outside DIGIT Studio scope.")
                         status.update(label="⚠️ Outside domain", state="complete", expanded=False)
@@ -274,14 +424,43 @@ if query:
                         st.write("✅ Relevant content found — generating answer.")
                         status.update(label="✅ Answered from docs", state="complete", expanded=False)
 
-                except Exception:
-                    full_answer = "Something went wrong. Please try again."
+                except Exception as e:
+                    full_answer = str(e) if "temporarily unavailable" in str(e) \
+                        else "Something went wrong. Please try again."
                     source = "error"
                     status.update(label="❌ Error", state="error", expanded=False)
 
                 answer = full_answer
 
-        st.markdown(answer)
+        if source in ("rag",):
+            # Stream remaining chunks after status closes
+            t_stream_start = time.perf_counter()
+
+            def _remaining_gen():
+                yield answer  # already have first chunk(s)
+                try:
+                    for chunk in rag_gen:
+                        yield chunk
+                except Exception:
+                    pass
+
+            answer = st.write_stream(_remaining_gen())
+            timings["generate_ms"] = int((time.perf_counter() - t_stream_start) * 1000)
+        else:
+            st.markdown(answer)
+
+        # ── Latency caption (RAG answers only) ──
+        if source == "rag" and timings:
+            rewrite_ms  = timings.get("rewrite_ms", 0)
+            retrieve_ms = timings.get("retrieve_ms", 0)
+            generate_ms = timings.get("generate_ms", 0)
+            total_ms    = int((time.perf_counter() - t_query_start) * 1000)
+            print(f"[Latency] rewrite={rewrite_ms}ms retrieve={retrieve_ms}ms "
+                  f"generate={generate_ms}ms total={total_ms}ms")
+            st.caption(
+                f"⏱ Rewrite {rewrite_ms}ms · Retrieve {retrieve_ms}ms · "
+                f"Generate {generate_ms}ms · Total {total_ms}ms"
+            )
 
         # Render chip buttons immediately after the answer
         if source == "chips" and chips:
@@ -292,11 +471,20 @@ if query:
                     st.rerun()
 
         if source == "cache":
-            st.caption("⚡ Instant answer")
+            conf_pct = f" · {faq_confidence:.0%} match" if faq_confidence else ""
+            st.caption(f"⚡ Instant answer{conf_pct}")
 
-    # Log every query + answer to query_history
+        if source == "rag" and sources:
+            with st.expander("📚 Sources used", expanded=False):
+                for s in sources:
+                    label = f"{s['section']} / {s['id']}" if s.get('section') else s['id']
+                    st.caption(label)
+
+    # Log every query + answer to query_history (with latency + top_score)
     try:
-        log_query(query, answer, source)
+        total_ms   = int((time.perf_counter() - t_query_start) * 1000)
+        top_score  = timings.get("top_score")
+        log_query(query, answer, source, latency_ms=total_ms, top_score=top_score)
     except Exception:
         pass
 
@@ -307,11 +495,16 @@ if query:
         "query": query,
         "source": source,
         "feedback": None,
+        "faq_confidence": faq_confidence,
     }
     if chips:
         msg_data["chips"] = chips
+    if sources:
+        msg_data["sources"] = sources
 
     st.session_state.messages.append(msg_data)
     st.session_state.history.append({"role": "assistant", "content": answer})
+    if len(st.session_state.history) > 20:
+        st.session_state.history = st.session_state.history[-20:]
 
     st.rerun()

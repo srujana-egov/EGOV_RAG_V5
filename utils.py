@@ -3,6 +3,7 @@ import json
 import datetime
 import urllib.request
 import smtplib
+import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import tiktoken
@@ -13,6 +14,7 @@ load_dotenv()
 
 try:
     import psycopg2
+    import psycopg2.pool
     from pgvector.psycopg2 import register_vector
 except ImportError:
     psycopg2 = None
@@ -25,37 +27,124 @@ except ImportError:
 # ─────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────
-PROMOTION_THRESHOLD = 5  # positive votes before auto-promoting RAG answer to Q&A cache
+PROMOTION_THRESHOLD = 3  # positive votes before auto-promoting RAG answer to Q&A cache
 
 
 # ─────────────────────────────────────────────
-# Env var helper
+# Env var helper — checks Streamlit secrets first, then env, then AWS/GCP if configured
 # ─────────────────────────────────────────────
 def get_env_var(key: str, default=None):
+    # 1. Streamlit Cloud secrets (works for st.secrets["KEY"] and st.secrets.section.KEY)
     if st and hasattr(st, "secrets"):
         try:
             if key in st.secrets:
                 return st.secrets[key]
         except Exception:
             pass
-    return os.environ.get(key, default)
+
+    # 2. Standard environment variable (.env / Docker / system)
+    val = os.environ.get(key)
+    if val is not None:
+        return val
+
+    # 3. AWS Secrets Manager (optional — only attempted if AWS_SECRET_NAME is set)
+    aws_secret_name = os.environ.get("AWS_SECRET_NAME")
+    if aws_secret_name:
+        try:
+            import boto3, json as _json
+            client = boto3.client("secretsmanager",
+                                  region_name=os.environ.get("AWS_REGION", "ap-south-1"))
+            secret = client.get_secret_value(SecretId=aws_secret_name)
+            secrets_dict = _json.loads(secret["SecretString"])
+            if key in secrets_dict:
+                # Cache into os.environ so we don't hit AWS on every call
+                os.environ[key] = secrets_dict[key]
+                return secrets_dict[key]
+        except Exception:
+            pass  # Fall through to default
+
+    return default
 
 
 # ─────────────────────────────────────────────
-# DB Connection
+# DB Connection Pool (ThreadedConnectionPool)
 # ─────────────────────────────────────────────
-def get_conn():
-    conn = psycopg2.connect(
-        dbname=get_env_var("PGDATABASE"),
-        user=get_env_var("PGUSER"),
-        password=get_env_var("PGPASSWORD"),
-        host=get_env_var("PGHOST"),
-        port=get_env_var("PGPORT", "5432"),
-        sslmode="require",
-        connect_timeout=5
-    )
-    register_vector(conn)
-    return conn
+_pool: Optional["psycopg2.pool.ThreadedConnectionPool"] = None
+_pool_lock = threading.Lock()
+
+
+def _get_pool() -> "psycopg2.pool.ThreadedConnectionPool":
+    """Lazily initialise a thread-safe connection pool (min=2, max=10)."""
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:  # double-checked locking
+                _pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=2,
+                    maxconn=10,
+                    dbname=get_env_var("PGDATABASE"),
+                    user=get_env_var("PGUSER"),
+                    password=get_env_var("PGPASSWORD"),
+                    host=get_env_var("PGHOST"),
+                    port=get_env_var("PGPORT", "5432"),
+                    sslmode="require",
+                    connect_timeout=5,
+                )
+                print("[DB] Connection pool initialised (min=2, max=10).")
+    return _pool
+
+
+class _PooledConnection:
+    """
+    Thin wrapper that makes pool.getconn() / pool.putconn() look like a normal
+    psycopg2 connection so all existing `conn = get_conn(); conn.close()` code
+    continues to work without modification.
+    """
+    def __init__(self, conn):
+        self._conn = conn
+
+    # ── Delegate the methods callers actually use ──
+    def cursor(self):          return self._conn.cursor()
+    def commit(self):          return self._conn.commit()
+    def rollback(self):        return self._conn.rollback()
+
+    def close(self):
+        """Return the connection to the pool instead of closing it."""
+        try:
+            pool = _get_pool()
+            pool.putconn(self._conn)
+        except Exception as e:
+            print(f"[DB] Could not return connection to pool: {e}")
+
+    # Allow use as context manager: `with get_conn() as conn:`
+    def __enter__(self):       return self
+    def __exit__(self, *args): self.close()
+
+
+def get_conn() -> _PooledConnection:
+    """
+    Borrow a connection from the pool. Caller must call conn.close() when done
+    (which returns it to the pool — it is NOT actually closed).
+    Falls back to a direct connection if the pool is exhausted.
+    """
+    try:
+        pool = _get_pool()
+        raw = pool.getconn()
+        register_vector(raw)
+        return _PooledConnection(raw)
+    except psycopg2.pool.PoolError:
+        print("[DB] Pool exhausted — falling back to direct connection.")
+        raw = psycopg2.connect(
+            dbname=get_env_var("PGDATABASE"),
+            user=get_env_var("PGUSER"),
+            password=get_env_var("PGPASSWORD"),
+            host=get_env_var("PGHOST"),
+            port=get_env_var("PGPORT", "5432"),
+            sslmode="require",
+            connect_timeout=5,
+        )
+        register_vector(raw)
+        return _PooledConnection(raw)
 
 
 # ─────────────────────────────────────────────
@@ -71,9 +160,20 @@ def ensure_query_history_table():
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     query TEXT,
                     answer_snippet TEXT,
-                    source VARCHAR(20)
+                    source VARCHAR(20),
+                    latency_ms INTEGER,
+                    top_score REAL
                 )
             """)
+            # Add new columns to existing tables gracefully
+            for stmt in [
+                "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS latency_ms INTEGER",
+                "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS top_score REAL",
+            ]:
+                try:
+                    cur.execute(stmt)
+                except Exception:
+                    conn.rollback()
         conn.commit()
     except Exception as e:
         print(f"[DB] Could not create query_history table: {e}")
@@ -118,14 +218,15 @@ def log_vote(query: str, answer: str, rating: str):
         conn.close()
 
 
-def log_query(query: str, answer: str, source: str):
+def log_query(query: str, answer: str, source: str,
+              latency_ms: Optional[int] = None, top_score: Optional[float] = None):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO query_history (query, answer_snippet, source)
-                VALUES (%s, %s, %s)
-            """, (query, answer[:500], source))
+                INSERT INTO query_history (query, answer_snippet, source, latency_ms, top_score)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (query, answer[:500], source, latency_ms, top_score))
         conn.commit()
     except Exception as e:
         print(f"[QueryHistory] Log failed: {e}")
@@ -285,16 +386,19 @@ def _log_feedback_file(query: str, answer: str, rating: str, source: str, commen
 # ─────────────────────────────────────────────
 # Vote tracking + auto-promotion to Q&A cache
 # ─────────────────────────────────────────────
-def update_qa_votes_and_promote(query: str, answer: str, rating: str):
+def update_qa_votes_and_promote(query: str, answer: str, rating: str) -> bool:
     """
     Track votes per query. On positive rating:
     - Count all positive/negative feedback for this exact query
     - If positive_votes >= PROMOTION_THRESHOLD, auto-promote to predetermined_qa
     - Update confidence for entries already in the cache
+
+    Returns True if a new auto-promotion happened, False otherwise.
     """
     if not query or not answer:
-        return
+        return False
 
+    promoted = False
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -338,12 +442,14 @@ def update_qa_votes_and_promote(query: str, answer: str, rating: str):
                     VALUES (%s, %s, %s, %s, %s, 'auto_promoted')
                 """, (query, answer, confidence, pos_votes, neg_votes))
                 print(f"[Promote] Auto-promoted to Q&A cache after {pos_votes} votes: {query[:60]}...")
+                promoted = True
 
         conn.commit()
     except Exception as e:
         print(f"[Votes] Error updating votes: {e}")
     finally:
         conn.close()
+    return promoted
 
 
 # ─────────────────────────────────────────────
@@ -579,20 +685,52 @@ def send_email_report(report: dict, to_email: str = None):
 
 
 # ─────────────────────────────────────────────
+# Ensure metadata columns on studio_manual
+# ─────────────────────────────────────────────
+def ensure_section_column(table: str = "studio_manual"):
+    """Add section, ingested_at, and version_tag columns if they don't exist."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            migrations = [
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS section TEXT DEFAULT ''",
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT NOW()",
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS version_tag TEXT DEFAULT 'v1.0'",
+            ]
+            for stmt in migrations:
+                try:
+                    cur.execute(stmt)
+                except Exception:
+                    conn.rollback()
+        conn.commit()
+        print(f"[DB] section / ingested_at / version_tag columns ensured on {table}.")
+    except Exception as e:
+        conn.rollback()
+        print(f"[DB] Could not ensure metadata columns (non-fatal): {e}")
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────
 # Insert chunk (for ingestion)
 # ─────────────────────────────────────────────
 def insert_chunk(doc_id: str, text: str, metadata: dict, get_embedding, table: str = "studio_manual"):
     emb = get_embedding(text)
+    section = metadata.get("section", "")
+    version_tag = metadata.get("version_tag", "v1.0")
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(f"""
-                INSERT INTO {table} (id, document, embedding)
-                VALUES (%s, %s, %s)
+                INSERT INTO {table} (id, document, embedding, section, version_tag, ingested_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (id) DO UPDATE SET
-                    document = EXCLUDED.document,
-                    embedding = EXCLUDED.embedding
-            """, (doc_id, text, emb))
+                    document    = EXCLUDED.document,
+                    embedding   = EXCLUDED.embedding,
+                    section     = EXCLUDED.section,
+                    version_tag = EXCLUDED.version_tag,
+                    ingested_at = NOW()
+            """, (doc_id, text, emb, section, version_tag))
         conn.commit()
     finally:
         conn.close()
