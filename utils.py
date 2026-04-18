@@ -41,6 +41,25 @@ except ImportError:
 # ─────────────────────────────────────────────
 PROMOTION_THRESHOLD = 3  # positive votes before auto-promoting RAG answer to Q&A cache
 
+# ─────────────────────────────────────────────
+# Cache invalidation registry
+# app.py registers its cache-clear callbacks here so utils can
+# trigger invalidation without a circular import.
+# ─────────────────────────────────────────────
+_cache_invalidation_callbacks: list = []
+
+def register_cache_invalidation_callback(fn):
+    """Register a zero-arg callable to be called when the knowledge base changes."""
+    _cache_invalidation_callbacks.append(fn)
+
+def _invalidate_caches():
+    """Call all registered cache invalidation callbacks."""
+    for fn in _cache_invalidation_callbacks:
+        try:
+            fn()
+        except Exception as e:
+            logger.warning("Cache invalidation callback failed: %s", e)
+
 
 # ─────────────────────────────────────────────
 # Env var helper — checks Streamlit secrets first, then env, then AWS/GCP if configured
@@ -535,9 +554,9 @@ def get_flagged_feedback_for_report(days: int = 7) -> list:
                 SELECT created_at, query, answer_snippet, source, comment
                 FROM bot_feedback
                 WHERE rating = 'negative'
-                  AND created_at >= NOW() - INTERVAL '%s days'
+                  AND created_at >= NOW() - (%s * INTERVAL '1 day')
                 ORDER BY created_at DESC
-            """ % int(days))
+            """, (int(days),))
             rows = cur.fetchall()
             return [
                 {
@@ -569,8 +588,8 @@ def generate_weekly_report(days: int = 7) -> dict:
             cur.execute("""
                 SELECT COUNT(*) FROM predetermined_qa
                 WHERE source = 'auto_promoted'
-                  AND updated_at >= NOW() - INTERVAL '%s days'
-            """ % int(days))
+                  AND updated_at >= NOW() - (%s * INTERVAL '1 day')
+            """, (int(days),))
             promoted_count = cur.fetchone()[0] or 0
     except Exception:
         pass
@@ -748,6 +767,7 @@ def insert_chunk(doc_id: str, text: str, metadata: dict, get_embedding, table: s
                     ingested_at = NOW()
             """, (doc_id, text, emb, section, version_tag))
         conn.commit()
+        _invalidate_caches()
     finally:
         conn.close()
 

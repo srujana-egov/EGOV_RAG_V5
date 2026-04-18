@@ -23,6 +23,7 @@ from utils import (
     ensure_vote_log_table,
     update_qa_votes_and_promote,
     ensure_section_column,
+    register_cache_invalidation_callback,
 )
 
 # ─────────────────────────────────────────────
@@ -114,8 +115,12 @@ try:
     ensure_vote_log_table()
     ensure_fts_index()
     ensure_section_column()
-except Exception:
-    pass
+except Exception as e:
+    logger.error("Startup DB initialisation failed: %s", e)
+    st.error(
+        "⚠️ Database initialisation failed. Some features may not work correctly. "
+        "Check your database configuration and restart the app."
+    )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -154,6 +159,13 @@ def _load_faq_embeddings():
         }
         for r, emb in zip(rows, embeddings)
     ]
+
+
+def _clear_faq_caches():
+    _load_qa_cache.clear()
+    _load_faq_embeddings.clear()
+
+register_cache_invalidation_callback(_clear_faq_caches)
 
 
 # ─────────────────────────────────────────────
