@@ -1,4 +1,5 @@
 import logging
+import re as _re
 from typing import List, Tuple, Dict
 from utils import get_conn, get_env_var
 import openai
@@ -21,6 +22,9 @@ def _get_client():
 
 
 TABLE = get_env_var("DB_TABLE", "studio_manual")
+import re as _re
+if not _re.match(r'^[A-Za-z0-9_]+$', str(TABLE)):
+    raise ValueError(f"DB_TABLE env var contains invalid characters: {TABLE!r}")
 
 # Shared retry decorator for embedding API calls
 _embed_retry = retry(
@@ -42,7 +46,8 @@ _embed_retry = retry(
 def get_embedding(text: str) -> List[float]:
     resp = _get_client().embeddings.create(
         model="text-embedding-3-small",
-        input=text
+        input=text,
+        timeout=20
     )
     return resp.data[0].embedding
 
@@ -52,7 +57,8 @@ def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
     """Embed multiple texts in a single API call (preserves order)."""
     resp = _get_client().embeddings.create(
         model="text-embedding-3-small",
-        input=texts
+        input=texts,
+        timeout=20
     )
     items = sorted(resp.data, key=lambda x: x.index)
     return [item.embedding for item in items]

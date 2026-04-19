@@ -93,7 +93,8 @@ def _call_rewrite(query: str) -> str:
             {"role": "user", "content": query}
         ],
         max_tokens=100,
-        temperature=0.0
+        temperature=0.0,
+        timeout=30
     )
     return response.choices[0].message.content.strip()
 
@@ -155,7 +156,8 @@ def chat_with_assistant(query: str, docs: list, history: list = None, model: str
         model=model,
         messages=messages,
         max_tokens=2000,
-        temperature=0.2
+        temperature=0.2,
+        timeout=30
     )
     return response.choices[0].message.content.strip()
 
@@ -175,6 +177,7 @@ def stream_rag_answer(query: str, docs: list, history: list = None, model: str =
             max_tokens=2000,
             temperature=0.2,
             stream=True,
+            timeout=30,
         )
 
     try:
