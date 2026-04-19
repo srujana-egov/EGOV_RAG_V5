@@ -1,10 +1,10 @@
 """
-DIGIT Studio Bot — Query Analytics
+Bot Analytics — reads from env-configured tables so it works for any domain.
 Navigate to this page via the Streamlit sidebar.
 """
 import streamlit as st
 import pandas as pd
-from utils import get_conn
+from utils import get_conn, HISTORY_TABLE, FEEDBACK_TABLE, VOTE_TABLE
 
 st.set_page_config(page_title="Bot Analytics", page_icon="📊", layout="wide")
 st.title("📊 Query Analytics")
@@ -13,35 +13,47 @@ st.title("📊 Query Analytics")
 def load_query_history():
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT query, answer_snippet, source, created_at
-                FROM query_history
-                ORDER BY created_at DESC
-                LIMIT 500
-            """)
-            rows = cur.fetchall()
-            return pd.DataFrame(rows, columns=["Query", "Answer", "Source", "Time"])
+            # Try new column name; fall back to legacy 'answer' for tables not yet migrated
+            for col in ("answer_snippet", "answer"):
+                try:
+                    cur.execute(f"""
+                        SELECT query, {col}, source, created_at
+                        FROM {HISTORY_TABLE}
+                        ORDER BY created_at DESC
+                        LIMIT 500
+                    """)
+                    rows = cur.fetchall()
+                    return pd.DataFrame(rows, columns=["Query", "Answer", "Source", "Time"])
+                except Exception:
+                    conn.rollback()
+        return pd.DataFrame(columns=["Query", "Answer", "Source", "Time"])
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_feedback():
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT query, answer_snippet, rating, source, created_at
-                FROM bot_feedback
-                ORDER BY created_at DESC
-                LIMIT 200
-            """)
-            rows = cur.fetchall()
-            return pd.DataFrame(rows, columns=["Query", "Response", "Feedback", "Source", "Time"])
+            # Try new column name; fall back to legacy 'response'
+            for col in ("answer_snippet", "response"):
+                try:
+                    cur.execute(f"""
+                        SELECT query, {col}, rating, source, created_at
+                        FROM {FEEDBACK_TABLE}
+                        ORDER BY created_at DESC
+                        LIMIT 200
+                    """)
+                    rows = cur.fetchall()
+                    return pd.DataFrame(rows, columns=["Query", "Response", "Feedback", "Source", "Time"])
+                except Exception:
+                    conn.rollback()
+        return pd.DataFrame(columns=["Query", "Response", "Feedback", "Source", "Time"])
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_votes():
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(f"""
                 SELECT query, rating AS vote_type, created_at
-                FROM vote_log
+                FROM {VOTE_TABLE}
                 ORDER BY created_at DESC
                 LIMIT 500
             """)
@@ -103,4 +115,4 @@ if not feedback_df.empty:
 else:
     st.info("No feedback logged yet.")
 
-st.caption("Refreshes every 60 seconds. Data from query_history, bot_feedback, vote_log tables.")
+st.caption(f"Refreshes every 60 seconds. Data from {HISTORY_TABLE}, {FEEDBACK_TABLE}, {VOTE_TABLE} tables.")

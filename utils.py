@@ -226,6 +226,18 @@ def ensure_query_history_table():
                         top_score REAL
                     )
                 """)
+                # Rename legacy 'answer' column to 'answer_snippet' if it exists
+                cur.execute(f"""
+                    DO $$ BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = '{HISTORY_TABLE}'
+                              AND column_name = 'answer'
+                        ) THEN
+                            ALTER TABLE {HISTORY_TABLE} RENAME COLUMN answer TO answer_snippet;
+                        END IF;
+                    END $$;
+                """)
                 # Add new columns to existing tables gracefully
                 for stmt in [
                     f"ALTER TABLE {HISTORY_TABLE} ADD COLUMN IF NOT EXISTS latency_ms INTEGER",
@@ -346,6 +358,18 @@ def ensure_feedback_table():
                         comment TEXT,
                         is_flagged BOOLEAN DEFAULT FALSE
                     )
+                """)
+                # Rename legacy 'response' column to 'answer_snippet' if it exists
+                cur.execute(f"""
+                    DO $$ BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = '{FEEDBACK_TABLE}'
+                              AND column_name = 'response'
+                        ) THEN
+                            ALTER TABLE {FEEDBACK_TABLE} RENAME COLUMN response TO answer_snippet;
+                        END IF;
+                    END $$;
                 """)
                 # Add is_flagged column if missing on older tables
                 cur.execute(f"""
