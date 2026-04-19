@@ -14,6 +14,9 @@ from tenacity import (
 
 load_dotenv()
 
+# Domain identity — set APP_DOMAIN env var to change for other deployments (e.g. "HCM")
+_APP_DOMAIN = os.environ.get("APP_DOMAIN", "DIGIT Studio")
+
 # ─────────────────────────────────────────────
 # Single OpenAI client
 # ─────────────────────────────────────────────
@@ -51,16 +54,9 @@ _openai_retry = retry(
 OUT_OF_DOMAIN_THRESHOLD = float(os.environ.get("OUT_OF_DOMAIN_THRESHOLD", "0.35"))  # cosine similarity below this = out of DIGIT Studio domain
 
 OUT_OF_DOMAIN_MSG = (
-    "I'm sorry, that question appears to be outside the scope of DIGIT Studio documentation.\n\n"
-    "I can only answer questions related to **DIGIT Studio** — eGovernments Foundation's platform "
-    "for building digital public services.\n\n"
-    "**Topics I can help with:**\n"
-    "- Building services, forms, workflows, and checklists\n"
-    "- Roles, permissions, and user management\n"
-    "- Notifications (SMS/email), documents, and integrations\n"
-    "- Deployment, environments, and configuration\n"
-    "- Citizen and employee app behaviour\n\n"
-    "Please ask a question related to DIGIT Studio."
+    f"I'm sorry, that question appears to be outside the scope of {_APP_DOMAIN} documentation.\n\n"
+    f"I can only answer questions related to **{_APP_DOMAIN}**.\n\n"
+    f"Please ask a question related to {_APP_DOMAIN}."
 )
 
 
@@ -84,7 +80,7 @@ def _call_rewrite(query: str) -> str:
             {
                 "role": "system",
                 "content": (
-                    "You are a search query optimizer for a DIGIT Studio documentation chatbot. "
+                    f"You are a search query optimizer for a {_APP_DOMAIN} documentation chatbot. "
                     "Rewrite the user's question to maximize retrieval of relevant documentation. "
                     "Expand abbreviations, add relevant synonyms, make it more specific. "
                     "Return ONLY the rewritten query, nothing else. 15 words or fewer."
@@ -159,7 +155,7 @@ def generate_query_variants(query: str) -> list[str]:
 # ─────────────────────────────────────────────
 # System prompt
 # ─────────────────────────────────────────────
-SYSTEM_PROMPT = """You are a helpful assistant for DIGIT Studio — a low-code platform for building government digital services.
+SYSTEM_PROMPT = f"""You are a helpful assistant for {_APP_DOMAIN}.
 
 Answer questions clearly and accurately using only the provided context.
 

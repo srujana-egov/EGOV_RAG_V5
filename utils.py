@@ -106,6 +106,20 @@ def get_env_var(key: str, default=None):
 
 
 # ─────────────────────────────────────────────
+# Table name configuration — override via env vars for multi-domain deployments
+# e.g. set QA_TABLE=hcm_predetermined_qa for HCM deployment
+# ─────────────────────────────────────────────
+QA_TABLE       = get_env_var("QA_TABLE",              "predetermined_qa")
+HISTORY_TABLE  = get_env_var("QUERY_HISTORY_TABLE",   "query_history")
+FEEDBACK_TABLE = get_env_var("FEEDBACK_TABLE",        "bot_feedback")
+VOTE_TABLE     = get_env_var("VOTE_LOG_TABLE",        "vote_log")
+_validate_table_name(QA_TABLE)
+_validate_table_name(HISTORY_TABLE)
+_validate_table_name(FEEDBACK_TABLE)
+_validate_table_name(VOTE_TABLE)
+
+
+# ─────────────────────────────────────────────
 # DB Connection Pool (ThreadedConnectionPool)
 # ─────────────────────────────────────────────
 _pool: Optional["psycopg2.pool.ThreadedConnectionPool"] = None
@@ -201,8 +215,8 @@ def ensure_query_history_table():
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS query_history (
+                cur.execute(f"""
+                    CREATE TABLE IF NOT EXISTS {HISTORY_TABLE} (
                         id SERIAL PRIMARY KEY,
                         created_at TIMESTAMPTZ DEFAULT NOW(),
                         query TEXT,
@@ -214,8 +228,8 @@ def ensure_query_history_table():
                 """)
                 # Add new columns to existing tables gracefully
                 for stmt in [
-                    "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS latency_ms INTEGER",
-                    "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS top_score REAL",
+                    f"ALTER TABLE {HISTORY_TABLE} ADD COLUMN IF NOT EXISTS latency_ms INTEGER",
+                    f"ALTER TABLE {HISTORY_TABLE} ADD COLUMN IF NOT EXISTS top_score REAL",
                 ]:
                     try:
                         cur.execute(stmt)
@@ -231,8 +245,8 @@ def ensure_vote_log_table():
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS vote_log (
+                cur.execute(f"""
+                    CREATE TABLE IF NOT EXISTS {VOTE_TABLE} (
                         id SERIAL PRIMARY KEY,
                         created_at TIMESTAMPTZ DEFAULT NOW(),
                         query TEXT,
@@ -250,8 +264,8 @@ def log_vote(query: str, answer: str, rating: str):
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO vote_log (query, answer_snippet, rating)
+                cur.execute(f"""
+                    INSERT INTO {VOTE_TABLE} (query, answer_snippet, rating)
                     VALUES (%s, %s, %s)
                 """, (query, answer[:500], rating))
             conn.commit()
@@ -264,8 +278,8 @@ def log_query(query: str, answer: str, source: str,
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO query_history (query, answer_snippet, source, latency_ms, top_score)
+                cur.execute(f"""
+                    INSERT INTO {HISTORY_TABLE} (query, answer_snippet, source, latency_ms, top_score)
                     VALUES (%s, %s, %s, %s, %s)
                 """, (query, answer[:500], source, latency_ms, top_score))
             conn.commit()
@@ -277,9 +291,9 @@ def get_query_history(limit: int = 200) -> list:
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT created_at, query, answer_snippet, source
-                    FROM query_history
+                    FROM {HISTORY_TABLE}
                     ORDER BY created_at DESC
                     LIMIT %s
                 """, (limit,))
@@ -297,9 +311,9 @@ def get_flagged_queries() -> list:
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT created_at, query, answer_snippet, source, comment
-                    FROM bot_feedback
+                    FROM {FEEDBACK_TABLE}
                     WHERE is_flagged = TRUE
                     ORDER BY created_at DESC
                 """)
@@ -321,8 +335,8 @@ def ensure_feedback_table():
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS bot_feedback (
+                cur.execute(f"""
+                    CREATE TABLE IF NOT EXISTS {FEEDBACK_TABLE} (
                         id SERIAL PRIMARY KEY,
                         created_at TIMESTAMPTZ DEFAULT NOW(),
                         query TEXT,
@@ -334,8 +348,8 @@ def ensure_feedback_table():
                     )
                 """)
                 # Add is_flagged column if missing on older tables
-                cur.execute("""
-                    ALTER TABLE bot_feedback
+                cur.execute(f"""
+                    ALTER TABLE {FEEDBACK_TABLE}
                     ADD COLUMN IF NOT EXISTS is_flagged BOOLEAN DEFAULT FALSE
                 """)
             conn.commit()
@@ -350,8 +364,8 @@ def ensure_qa_table_full():
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS predetermined_qa (
+                cur.execute(f"""
+                    CREATE TABLE IF NOT EXISTS {QA_TABLE} (
                         id SERIAL PRIMARY KEY,
                         question TEXT NOT NULL,
                         answer TEXT NOT NULL,
@@ -366,12 +380,12 @@ def ensure_qa_table_full():
                 """)
                 # Add missing columns on older tables
                 for stmt in [
-                    "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS positive_votes INT DEFAULT 0",
-                    "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS negative_votes INT DEFAULT 0",
-                    "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'manual'",
-                    "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
-                    "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
-                    "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+                    f"ALTER TABLE {QA_TABLE} ADD COLUMN IF NOT EXISTS positive_votes INT DEFAULT 0",
+                    f"ALTER TABLE {QA_TABLE} ADD COLUMN IF NOT EXISTS negative_votes INT DEFAULT 0",
+                    f"ALTER TABLE {QA_TABLE} ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'manual'",
+                    f"ALTER TABLE {QA_TABLE} ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
+                    f"ALTER TABLE {QA_TABLE} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+                    f"ALTER TABLE {QA_TABLE} ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
                 ]:
                     try:
                         cur.execute(stmt)
@@ -390,8 +404,8 @@ def log_feedback(query: str, answer: str, rating: str, source: str = "rag", comm
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO bot_feedback (query, answer_snippet, rating, source, comment, is_flagged)
+                cur.execute(f"""
+                    INSERT INTO {FEEDBACK_TABLE} (query, answer_snippet, rating, source, comment, is_flagged)
                     VALUES (%s, %s, %s, %s, %s, %s)
                 """, (query, answer[:500], rating, source, comment, is_flagged))
             conn.commit()
@@ -429,11 +443,11 @@ def update_qa_votes_and_promote(query: str, answer: str, rating: str) -> bool:
         try:
             with conn.cursor() as cur:
                 # Count votes for this query from vote_log (case-insensitive)
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         SUM(CASE WHEN rating = 'positive' THEN 1 ELSE 0 END),
                         SUM(CASE WHEN rating = 'negative' THEN 1 ELSE 0 END)
-                    FROM vote_log
+                    FROM {VOTE_TABLE}
                     WHERE LOWER(TRIM(query)) = LOWER(TRIM(%s))
                 """, (query,))
                 row = cur.fetchone()
@@ -443,16 +457,16 @@ def update_qa_votes_and_promote(query: str, answer: str, rating: str) -> bool:
                 confidence = round(pos_votes / total, 3) if total > 0 else 1.0
 
                 # Check if already in predetermined_qa
-                cur.execute("""
-                    SELECT id FROM predetermined_qa
+                cur.execute(f"""
+                    SELECT id FROM {QA_TABLE}
                     WHERE LOWER(TRIM(question)) = LOWER(TRIM(%s))
                 """, (query,))
                 existing = cur.fetchone()
 
                 if existing:
                     # Update vote counts and confidence for existing entry
-                    cur.execute("""
-                        UPDATE predetermined_qa
+                    cur.execute(f"""
+                        UPDATE {QA_TABLE}
                         SET positive_votes = %s,
                             negative_votes = %s,
                             confidence = %s,
@@ -462,8 +476,8 @@ def update_qa_votes_and_promote(query: str, answer: str, rating: str) -> bool:
                     logger.info("Votes: Updated existing Q&A confidence to %s", confidence)
                 elif rating == "positive" and pos_votes >= PROMOTION_THRESHOLD:
                     # Auto-promote this RAG answer to the Q&A cache (pending admin review)
-                    cur.execute("""
-                        INSERT INTO predetermined_qa
+                    cur.execute(f"""
+                        INSERT INTO {QA_TABLE}
                             (question, answer, confidence, positive_votes, negative_votes, source, status)
                         VALUES (%s, %s, %s, %s, %s, 'auto_promoted', 'pending_review')
                     """, (query, answer, confidence, pos_votes, neg_votes))
@@ -482,7 +496,7 @@ def approve_pending_qa(qa_id: int) -> bool:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE predetermined_qa SET status = 'active' "
+                    f"UPDATE {QA_TABLE} SET status = 'active' "
                     "WHERE id = %s AND status = 'pending_review'",
                     (qa_id,),
                 )
@@ -500,9 +514,9 @@ def get_pending_qa_entries() -> list:
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT id, question, answer, confidence, created_at
-                    FROM predetermined_qa
+                    FROM {QA_TABLE}
                     WHERE status = 'pending_review'
                     ORDER BY created_at DESC
                 """)
@@ -519,9 +533,9 @@ def get_recent_feedback(limit: int = 50) -> list:
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT created_at, query, rating, source, comment
-                    FROM bot_feedback
+                    FROM {FEEDBACK_TABLE}
                     ORDER BY created_at DESC
                     LIMIT %s
                 """, (limit,))
@@ -539,14 +553,14 @@ def get_feedback_stats() -> dict:
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         COUNT(*) AS total,
                         SUM(CASE WHEN rating = 'positive' THEN 1 ELSE 0 END) AS positive,
                         SUM(CASE WHEN rating = 'negative' THEN 1 ELSE 0 END) AS negative,
                         SUM(CASE WHEN source = 'cache' THEN 1 ELSE 0 END) AS from_cache,
                         SUM(CASE WHEN source = 'rag' THEN 1 ELSE 0 END) AS from_rag
-                    FROM bot_feedback
+                    FROM {FEEDBACK_TABLE}
                 """)
                 row = cur.fetchone()
                 total = row[0] or 0
@@ -571,9 +585,9 @@ def get_flagged_feedback_for_report(days: int = 7) -> list:
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT created_at, query, answer_snippet, source, comment
-                    FROM bot_feedback
+                    FROM {FEEDBACK_TABLE}
                     WHERE rating = 'negative'
                       AND created_at >= NOW() - (%s * INTERVAL '1 day')
                     ORDER BY created_at DESC
@@ -604,8 +618,8 @@ def generate_weekly_report(days: int = 7) -> dict:
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT COUNT(*) FROM predetermined_qa
+                cur.execute(f"""
+                    SELECT COUNT(*) FROM {QA_TABLE}
                     WHERE source = 'auto_promoted'
                       AND updated_at >= NOW() - (%s * INTERVAL '1 day')
                 """, (int(days),))
