@@ -40,7 +40,7 @@ def load_votes():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT query, vote_type, created_at
+                SELECT query, rating AS vote_type, created_at
                 FROM vote_log
                 ORDER BY created_at DESC
                 LIMIT 500

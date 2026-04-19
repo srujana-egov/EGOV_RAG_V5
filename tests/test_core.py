@@ -80,75 +80,152 @@ class TestOutOfDomainThreshold:
 # ═══════════════════════════════════════════════════════════════
 
 class TestStreamRagPipeline:
+    """
+    stream_rag_pipeline now uses multi_query_retrieve internally.
+    We patch at the retrieval module level so the pipeline picks it up.
+    The hybrid_retrieve_pg arg is still accepted but the pipeline calls
+    multi_query_retrieve, so we patch that directly.
+    """
+
+    def _mock_multi(self, return_value):
+        """Return a patch context for retrieval.multi_query_retrieve."""
+        return patch("retrieval.multi_query_retrieve", return_value=return_value)
+
     def test_empty_retrieval_yields_out_of_domain(self):
         from generator import stream_rag_pipeline, OUT_OF_DOMAIN_MSG
-        mock_retrieve = MagicMock(return_value=[])
-        with patch("generator.rewrite_query", return_value="query"):
+        with patch("generator.rewrite_query", return_value="query"), \
+             patch("generator.generate_query_variants", return_value=["query"]), \
+             patch("retrieval.multi_query_retrieve", return_value=[]):
             chunks = list(stream_rag_pipeline(
                 query="random question",
-                hybrid_retrieve_pg=mock_retrieve,
+                hybrid_retrieve_pg=MagicMock(),
             ))
         assert chunks == [OUT_OF_DOMAIN_MSG]
 
     def test_low_score_yields_out_of_domain(self):
         from generator import stream_rag_pipeline, OUT_OF_DOMAIN_MSG
-        mock_retrieve = MagicMock(return_value=[
-            ("some doc", {"vector_score": 0.10, "id": "c1", "section": "test"})
-        ])
-        with patch("generator.rewrite_query", return_value="query"):
+        low_results = [("some doc", {"vector_score": 0.10, "id": "c1", "section": "test"})]
+        with patch("generator.rewrite_query", return_value="query"), \
+             patch("generator.generate_query_variants", return_value=["query"]), \
+             patch("retrieval.multi_query_retrieve", return_value=low_results):
             chunks = list(stream_rag_pipeline(
                 query="what is the weather",
-                hybrid_retrieve_pg=mock_retrieve,
+                hybrid_retrieve_pg=MagicMock(),
             ))
         assert OUT_OF_DOMAIN_MSG in "".join(chunks)
 
     def test_high_score_calls_stream(self):
         from generator import stream_rag_pipeline
-        mock_retrieve = MagicMock(return_value=[
-            ("relevant doc", {"vector_score": 0.85, "id": "c1", "section": "Overview"})
-        ])
+        high_results = [("relevant doc", {"vector_score": 0.85, "id": "c1", "section": "Overview"})]
         with patch("generator.rewrite_query", return_value="query"), \
+             patch("generator.generate_query_variants", return_value=["query"]), \
+             patch("retrieval.multi_query_retrieve", return_value=high_results), \
              patch("generator.stream_rag_answer", return_value=iter(["DIGIT ", "is great."])) as mock_stream:
             chunks = list(stream_rag_pipeline(
                 query="what is DIGIT Studio",
-                hybrid_retrieve_pg=mock_retrieve,
+                hybrid_retrieve_pg=MagicMock(),
             ))
         assert mock_stream.called
         assert "".join(chunks) == "DIGIT is great."
 
     def test_timings_populated(self):
         from generator import stream_rag_pipeline
-        mock_retrieve = MagicMock(return_value=[
-            ("doc", {"vector_score": 0.9, "id": "c1", "section": "s"})
-        ])
+        results = [("doc", {"vector_score": 0.9, "id": "c1", "section": "s"})]
         timings = {}
         with patch("generator.rewrite_query", return_value="q"), \
+             patch("generator.generate_query_variants", return_value=["q", "q2"]), \
+             patch("retrieval.multi_query_retrieve", return_value=results), \
              patch("generator.stream_rag_answer", return_value=iter(["answer"])):
             list(stream_rag_pipeline(
                 query="test query",
-                hybrid_retrieve_pg=mock_retrieve,
+                hybrid_retrieve_pg=MagicMock(),
                 timings=timings,
             ))
         assert "rewrite_ms" in timings
         assert "retrieve_ms" in timings
         assert timings["top_score"] == 0.9
+        assert timings["query_variants"] == 2
 
     def test_collected_sources_populated(self):
         from generator import stream_rag_pipeline
-        mock_retrieve = MagicMock(return_value=[
-            ("doc", {"vector_score": 0.9, "id": "chunk-1", "section": "Overview"})
-        ])
+        results = [("doc", {"vector_score": 0.9, "id": "chunk-1", "section": "Overview"})]
         sources = []
         with patch("generator.rewrite_query", return_value="q"), \
+             patch("generator.generate_query_variants", return_value=["q"]), \
+             patch("retrieval.multi_query_retrieve", return_value=results), \
              patch("generator.stream_rag_answer", return_value=iter(["answer"])):
             list(stream_rag_pipeline(
                 query="test",
-                hybrid_retrieve_pg=mock_retrieve,
+                hybrid_retrieve_pg=MagicMock(),
                 collected_sources=sources,
             ))
         assert len(sources) == 1
         assert sources[0]["id"] == "chunk-1"
         assert sources[0]["section"] == "Overview"
+
+
+# ═══════════════════════════════════════════════════════════════
+# generator.py — generate_query_variants
+# ═══════════════════════════════════════════════════════════════
+
+class TestGenerateQueryVariants:
+    def test_simple_query_returns_original_only(self):
+        from generator import generate_query_variants
+        result = generate_query_variants("what is DIGIT")
+        assert result == ["what is DIGIT"]
+
+    def test_long_query_returns_original_plus_variants(self):
+        from generator import generate_query_variants
+        with patch("generator._call_variants", return_value=["how to configure workflows", "workflow setup steps"]):
+            result = generate_query_variants("how do I configure a multi-step workflow in DIGIT Studio")
+        assert len(result) == 3
+        assert result[0] == "how do I configure a multi-step workflow in DIGIT Studio"
+
+    def test_variant_failure_returns_original(self):
+        from generator import generate_query_variants
+        with patch("generator._call_variants", side_effect=Exception("API error")):
+            result = generate_query_variants("how do I configure a workflow in DIGIT Studio platform")
+        assert result == ["how do I configure a workflow in DIGIT Studio platform"]
+
+    def test_duplicate_variants_deduplicated(self):
+        from generator import generate_query_variants
+        q = "how do I configure a workflow in DIGIT Studio platform"
+        with patch("generator._call_variants", return_value=[q, "different phrasing"]):
+            result = generate_query_variants(q)
+        # original appears only once
+        assert result.count(q) == 1
+
+
+# ═══════════════════════════════════════════════════════════════
+# retrieval.py — detect_section_hint
+# ═══════════════════════════════════════════════════════════════
+
+class TestDetectSectionHint:
+    def test_notification_query_detected(self):
+        from retrieval import detect_section_hint
+        assert detect_section_hint("how do I configure SMS notifications?") == "notification"
+
+    def test_workflow_query_detected(self):
+        from retrieval import detect_section_hint
+        assert detect_section_hint("what workflow states are available?") == "workflow"
+
+    def test_deploy_query_detected(self):
+        from retrieval import detect_section_hint
+        assert detect_section_hint("how do I deploy to production?") == "deploy"
+
+    def test_ambiguous_query_returns_none(self):
+        from retrieval import detect_section_hint
+        # "role" + "workflow" both match → ambiguous → None
+        result = detect_section_hint("what roles can trigger workflow transitions?")
+        assert result is None
+
+    def test_unrelated_query_returns_none(self):
+        from retrieval import detect_section_hint
+        assert detect_section_hint("what is the weather today?") is None
+
+    def test_hcm_campaign_detected(self):
+        from retrieval import detect_section_hint
+        assert detect_section_hint("how do I set up a health campaign?") == "campaign"
 
 
 # ═══════════════════════════════════════════════════════════════

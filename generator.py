@@ -112,6 +112,50 @@ def rewrite_query(query: str) -> str:
         return query
 
 
+@_openai_retry
+def _call_variants(query: str) -> list:
+    """Call GPT-3.5 to generate 2 alternative phrasings of the query."""
+    response = _get_client().chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a search query optimizer for a documentation chatbot. "
+                    "Given a user question, generate exactly 2 alternative phrasings that "
+                    "capture the same intent using different terminology. "
+                    "Return ONLY the 2 alternatives, one per line, no numbering, no explanation."
+                )
+            },
+            {"role": "user", "content": query}
+        ],
+        max_tokens=120,
+        temperature=0.3,
+        timeout=30
+    )
+    raw = response.choices[0].message.content.strip()
+    variants = [line.strip() for line in raw.splitlines() if line.strip()]
+    return variants[:2]  # cap at 2
+
+
+def generate_query_variants(query: str) -> list[str]:
+    """
+    Return [original_query] + up to 2 paraphrases.
+    Falls back to [original_query] on any error.
+    Only generates variants for non-trivial queries (>5 words).
+    """
+    if _is_simple_query(query):
+        return [query]
+    try:
+        variants = _call_variants(query)
+        all_queries = [query] + [v for v in variants if v and v.lower() != query.lower()]
+        logger.info("MultiQuery: %d variants for '%s'", len(all_queries), query[:60])
+        return all_queries
+    except Exception as e:
+        logger.warning("MultiQuery: variant generation failed, using original: %s", e)
+        return [query]
+
+
 # ─────────────────────────────────────────────
 # System prompt
 # ─────────────────────────────────────────────
@@ -251,11 +295,20 @@ def stream_rag_pipeline(
     if timings is not None:
         timings["rewrite_ms"] = int((time.perf_counter() - t0) * 1000)
 
-    # ── Phase 2: Retrieval ──
+    # ── Phase 2: Multi-query retrieval with section filtering ──
     t1 = time.perf_counter()
-    docs_and_meta = hybrid_retrieve_pg(rewritten, top_k)
+    from retrieval import detect_section_hint, multi_query_retrieve
+    section_hint = detect_section_hint(rewritten)
+    query_variants = generate_query_variants(rewritten)
+    docs_and_meta = multi_query_retrieve(
+        query_variants,
+        top_k=top_k,
+        section_hint=section_hint,
+    )
     if timings is not None:
         timings["retrieve_ms"] = int((time.perf_counter() - t1) * 1000)
+        timings["query_variants"] = len(query_variants)
+        timings["section_hint"] = section_hint or ""
 
     # No results at all → out of domain
     if not docs_and_meta:
