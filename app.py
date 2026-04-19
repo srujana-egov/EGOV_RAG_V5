@@ -444,7 +444,7 @@ if query:
 
             else:
                 st.write("❌ No close FAQ match (score < 0.68).")
-                st.write("🔎 Step 2: Searching studio_manual documents...")
+                st.write(f"🔎 Step 2: Searching {_APP_DOMAIN} documents...")
 
                 # ── STEP 2: RAG pipeline ──
                 source = "rag"
