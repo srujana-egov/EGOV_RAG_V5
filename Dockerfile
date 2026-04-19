@@ -17,6 +17,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py generator.py retrieval.py utils.py ./
 COPY pages/ pages/ 2>/dev/null || true
 
+# Run as non-root for security
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
 # ── Runtime ───────────────────────────────────────────────────
 EXPOSE 8501
 

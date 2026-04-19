@@ -1,4 +1,5 @@
 import os
+import re as _re
 import json
 import logging
 import datetime
@@ -13,6 +14,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_table_name(name: str) -> str:
+    """Raise ValueError if table name contains characters outside [A-Za-z0-9_]."""
+    if not _re.match(r'^[A-Za-z0-9_]+$', str(name)):
+        raise ValueError(f"Invalid table name: {name!r}")
+    return name
 
 
 def configure_logging():
@@ -165,7 +173,11 @@ def get_conn() -> _PooledConnection:
     try:
         pool = _get_pool()
         raw = pool.getconn()
-        register_vector(raw)
+        try:
+            register_vector(raw)
+        except Exception:
+            pool.putconn(raw)
+            raise
         return _PooledConnection(raw, from_pool=True)
     except psycopg2.pool.PoolError:
         logger.warning("Pool exhausted — falling back to direct connection.")
@@ -186,202 +198,188 @@ def get_conn() -> _PooledConnection:
 # Query history table
 # ─────────────────────────────────────────────
 def ensure_query_history_table():
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS query_history (
-                    id SERIAL PRIMARY KEY,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    query TEXT,
-                    answer_snippet TEXT,
-                    source VARCHAR(20),
-                    latency_ms INTEGER,
-                    top_score REAL
-                )
-            """)
-            # Add new columns to existing tables gracefully
-            for stmt in [
-                "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS latency_ms INTEGER",
-                "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS top_score REAL",
-            ]:
-                try:
-                    cur.execute(stmt)
-                except Exception:
-                    conn.rollback()
-        conn.commit()
-    except Exception as e:
-        logger.error("DB: Could not create query_history table: %s", e)
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS query_history (
+                        id SERIAL PRIMARY KEY,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        query TEXT,
+                        answer_snippet TEXT,
+                        source VARCHAR(20),
+                        latency_ms INTEGER,
+                        top_score REAL
+                    )
+                """)
+                # Add new columns to existing tables gracefully
+                for stmt in [
+                    "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS latency_ms INTEGER",
+                    "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS top_score REAL",
+                ]:
+                    try:
+                        cur.execute(stmt)
+                    except Exception:
+                        conn.rollback()
+            conn.commit()
+        except Exception as e:
+            logger.error("DB: Could not create query_history table: %s", e)
 
 
 def ensure_vote_log_table():
     """Lightweight table for tracking thumbs-up/down counts used for auto-promotion."""
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS vote_log (
-                    id SERIAL PRIMARY KEY,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    query TEXT,
-                    answer_snippet TEXT,
-                    rating VARCHAR(10)
-                )
-            """)
-        conn.commit()
-    except Exception as e:
-        logger.error("DB: Could not create vote_log table: %s", e)
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS vote_log (
+                        id SERIAL PRIMARY KEY,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        query TEXT,
+                        answer_snippet TEXT,
+                        rating VARCHAR(10)
+                    )
+                """)
+            conn.commit()
+        except Exception as e:
+            logger.error("DB: Could not create vote_log table: %s", e)
 
 
 def log_vote(query: str, answer: str, rating: str):
     """Record a vote (positive or negative) for auto-promotion tracking."""
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO vote_log (query, answer_snippet, rating)
-                VALUES (%s, %s, %s)
-            """, (query, answer[:500], rating))
-        conn.commit()
-    except Exception as e:
-        logger.error("VoteLog: Log failed: %s", e)
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO vote_log (query, answer_snippet, rating)
+                    VALUES (%s, %s, %s)
+                """, (query, answer[:500], rating))
+            conn.commit()
+        except Exception as e:
+            logger.error("VoteLog: Log failed: %s", e)
 
 
 def log_query(query: str, answer: str, source: str,
               latency_ms: Optional[int] = None, top_score: Optional[float] = None):
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO query_history (query, answer_snippet, source, latency_ms, top_score)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (query, answer[:500], source, latency_ms, top_score))
-        conn.commit()
-    except Exception as e:
-        logger.error("QueryHistory: Log failed: %s", e)
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO query_history (query, answer_snippet, source, latency_ms, top_score)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (query, answer[:500], source, latency_ms, top_score))
+            conn.commit()
+        except Exception as e:
+            logger.error("QueryHistory: Log failed: %s", e)
 
 
 def get_query_history(limit: int = 200) -> list:
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT created_at, query, answer_snippet, source
-                FROM query_history
-                ORDER BY created_at DESC
-                LIMIT %s
-            """, (limit,))
-            rows = cur.fetchall()
-            return [
-                {"created_at": r[0], "query": r[1], "answer_snippet": r[2], "source": r[3]}
-                for r in rows
-            ]
-    except Exception as e:
-        logger.error("QueryHistory: Fetch failed: %s", e)
-        return []
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT created_at, query, answer_snippet, source
+                    FROM query_history
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                """, (limit,))
+                rows = cur.fetchall()
+                return [
+                    {"created_at": r[0], "query": r[1], "answer_snippet": r[2], "source": r[3]}
+                    for r in rows
+                ]
+        except Exception as e:
+            logger.error("QueryHistory: Fetch failed: %s", e)
+            return []
 
 
 def get_flagged_queries() -> list:
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT created_at, query, answer_snippet, source, comment
-                FROM bot_feedback
-                WHERE is_flagged = TRUE
-                ORDER BY created_at DESC
-            """)
-            rows = cur.fetchall()
-            return [
-                {"created_at": r[0], "query": r[1], "answer_snippet": r[2],
-                 "source": r[3], "comment": r[4] or ""}
-                for r in rows
-            ]
-    except Exception as e:
-        logger.error("QueryHistory: Flagged fetch failed: %s", e)
-        return []
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT created_at, query, answer_snippet, source, comment
+                    FROM bot_feedback
+                    WHERE is_flagged = TRUE
+                    ORDER BY created_at DESC
+                """)
+                rows = cur.fetchall()
+                return [
+                    {"created_at": r[0], "query": r[1], "answer_snippet": r[2],
+                     "source": r[3], "comment": r[4] or ""}
+                    for r in rows
+                ]
+        except Exception as e:
+            logger.error("QueryHistory: Flagged fetch failed: %s", e)
+            return []
 
 
 # ─────────────────────────────────────────────
 # Ensure feedback table (with is_flagged column)
 # ─────────────────────────────────────────────
 def ensure_feedback_table():
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS bot_feedback (
-                    id SERIAL PRIMARY KEY,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    query TEXT,
-                    answer_snippet TEXT,
-                    rating VARCHAR(10),
-                    source VARCHAR(20),
-                    comment TEXT,
-                    is_flagged BOOLEAN DEFAULT FALSE
-                )
-            """)
-            # Add is_flagged column if missing on older tables
-            cur.execute("""
-                ALTER TABLE bot_feedback
-                ADD COLUMN IF NOT EXISTS is_flagged BOOLEAN DEFAULT FALSE
-            """)
-        conn.commit()
-    except Exception as e:
-        logger.error("DB: Could not create feedback table: %s", e)
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_feedback (
+                        id SERIAL PRIMARY KEY,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        query TEXT,
+                        answer_snippet TEXT,
+                        rating VARCHAR(10),
+                        source VARCHAR(20),
+                        comment TEXT,
+                        is_flagged BOOLEAN DEFAULT FALSE
+                    )
+                """)
+                # Add is_flagged column if missing on older tables
+                cur.execute("""
+                    ALTER TABLE bot_feedback
+                    ADD COLUMN IF NOT EXISTS is_flagged BOOLEAN DEFAULT FALSE
+                """)
+            conn.commit()
+        except Exception as e:
+            logger.error("DB: Could not create feedback table: %s", e)
 
 
 # ─────────────────────────────────────────────
 # Ensure Q&A table with full schema
 # ─────────────────────────────────────────────
 def ensure_qa_table_full():
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS predetermined_qa (
-                    id SERIAL PRIMARY KEY,
-                    question TEXT NOT NULL,
-                    answer TEXT NOT NULL,
-                    confidence FLOAT DEFAULT 1.0,
-                    positive_votes INT DEFAULT 0,
-                    negative_votes INT DEFAULT 0,
-                    source VARCHAR(20) DEFAULT 'manual',
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ DEFAULT NOW()
-                )
-            """)
-            # Add missing columns on older tables
-            for stmt in [
-                "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS positive_votes INT DEFAULT 0",
-                "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS negative_votes INT DEFAULT 0",
-                "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'manual'",
-                "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
-                "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
-            ]:
-                try:
-                    cur.execute(stmt)
-                except Exception:
-                    conn.rollback()
-        conn.commit()
-    except Exception as e:
-        logger.error("DB: Could not ensure QA table: %s", e)
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS predetermined_qa (
+                        id SERIAL PRIMARY KEY,
+                        question TEXT NOT NULL,
+                        answer TEXT NOT NULL,
+                        confidence FLOAT DEFAULT 1.0,
+                        positive_votes INT DEFAULT 0,
+                        negative_votes INT DEFAULT 0,
+                        source VARCHAR(20) DEFAULT 'manual',
+                        status VARCHAR(20) DEFAULT 'active',
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+                # Add missing columns on older tables
+                for stmt in [
+                    "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS positive_votes INT DEFAULT 0",
+                    "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS negative_votes INT DEFAULT 0",
+                    "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'manual'",
+                    "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
+                    "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+                    "ALTER TABLE predetermined_qa ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+                ]:
+                    try:
+                        cur.execute(stmt)
+                    except Exception:
+                        conn.rollback()
+            conn.commit()
+        except Exception as e:
+            logger.error("DB: Could not ensure QA table: %s", e)
 
 
 # ─────────────────────────────────────────────
@@ -389,33 +387,26 @@ def ensure_qa_table_full():
 # ─────────────────────────────────────────────
 def log_feedback(query: str, answer: str, rating: str, source: str = "rag", comment: str = ""):
     is_flagged = (rating == "negative")
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO bot_feedback (query, answer_snippet, rating, source, comment, is_flagged)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (query, answer[:500], rating, source, comment, is_flagged))
-        conn.commit()
-        logger.info("Feedback: %s logged (flagged=%s)", rating, is_flagged)
-    except Exception as e:
-        logger.error("Feedback: DB log failed: %s", e)
-        _log_feedback_file(query, answer, rating, source, comment)
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO bot_feedback (query, answer_snippet, rating, source, comment, is_flagged)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (query, answer[:500], rating, source, comment, is_flagged))
+            conn.commit()
+            logger.info("Feedback: %s logged (flagged=%s)", rating, is_flagged)
+        except Exception as e:
+            logger.error("Feedback: DB log failed: %s", e)
+            _log_feedback_file(query, answer, rating, source, comment)
 
 
-def _log_feedback_file(query: str, answer: str, rating: str, source: str, comment: str):
-    record = {
-        "timestamp": datetime.datetime.utcnow().isoformat(),
-        "query": query,
-        "answer_snippet": answer[:300],
-        "rating": rating,
-        "source": source,
-        "comment": comment
-    }
-    with open("feedback_log.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps(record) + "\n")
+def _log_feedback_file(query: str, answer: str, rating: str, source: str = "", comment: str = ""):
+    """Fallback: emit to structured log (no disk writes in containers)."""
+    logger.warning(
+        "feedback_fallback rating=%s source=%s query=%r answer=%r",
+        rating, source, query[:120], answer[:120],
+    )
 
 
 # ─────────────────────────────────────────────
@@ -434,112 +425,142 @@ def update_qa_votes_and_promote(query: str, answer: str, rating: str) -> bool:
         return False
 
     promoted = False
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            # Count votes for this query from vote_log (case-insensitive)
-            cur.execute("""
-                SELECT
-                    SUM(CASE WHEN rating = 'positive' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN rating = 'negative' THEN 1 ELSE 0 END)
-                FROM vote_log
-                WHERE LOWER(TRIM(query)) = LOWER(TRIM(%s))
-            """, (query,))
-            row = cur.fetchone()
-            pos_votes = int(row[0] or 0)
-            neg_votes = int(row[1] or 0)
-            total = pos_votes + neg_votes
-            confidence = round(pos_votes / total, 3) if total > 0 else 1.0
-
-            # Check if already in predetermined_qa
-            cur.execute("""
-                SELECT id FROM predetermined_qa
-                WHERE LOWER(TRIM(question)) = LOWER(TRIM(%s))
-            """, (query,))
-            existing = cur.fetchone()
-
-            if existing:
-                # Update vote counts and confidence for existing entry
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                # Count votes for this query from vote_log (case-insensitive)
                 cur.execute("""
-                    UPDATE predetermined_qa
-                    SET positive_votes = %s,
-                        negative_votes = %s,
-                        confidence = %s,
-                        updated_at = NOW()
-                    WHERE id = %s
-                """, (pos_votes, neg_votes, confidence, existing[0]))
-                logger.info("Votes: Updated existing Q&A confidence to %s", confidence)
-            elif rating == "positive" and pos_votes >= PROMOTION_THRESHOLD:
-                # Auto-promote this RAG answer to the Q&A cache
-                cur.execute("""
-                    INSERT INTO predetermined_qa
-                        (question, answer, confidence, positive_votes, negative_votes, source)
-                    VALUES (%s, %s, %s, %s, %s, 'auto_promoted')
-                """, (query, answer, confidence, pos_votes, neg_votes))
-                logger.info("Promote: Auto-promoted to Q&A cache after %d votes: %s...", pos_votes, query[:60])
-                promoted = True
+                    SELECT
+                        SUM(CASE WHEN rating = 'positive' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN rating = 'negative' THEN 1 ELSE 0 END)
+                    FROM vote_log
+                    WHERE LOWER(TRIM(query)) = LOWER(TRIM(%s))
+                """, (query,))
+                row = cur.fetchone()
+                pos_votes = int(row[0] or 0)
+                neg_votes = int(row[1] or 0)
+                total = pos_votes + neg_votes
+                confidence = round(pos_votes / total, 3) if total > 0 else 1.0
 
-        conn.commit()
-    except Exception as e:
-        logger.error("Votes: Error updating votes: %s", e)
-    finally:
-        conn.close()
+                # Check if already in predetermined_qa
+                cur.execute("""
+                    SELECT id FROM predetermined_qa
+                    WHERE LOWER(TRIM(question)) = LOWER(TRIM(%s))
+                """, (query,))
+                existing = cur.fetchone()
+
+                if existing:
+                    # Update vote counts and confidence for existing entry
+                    cur.execute("""
+                        UPDATE predetermined_qa
+                        SET positive_votes = %s,
+                            negative_votes = %s,
+                            confidence = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                    """, (pos_votes, neg_votes, confidence, existing[0]))
+                    logger.info("Votes: Updated existing Q&A confidence to %s", confidence)
+                elif rating == "positive" and pos_votes >= PROMOTION_THRESHOLD:
+                    # Auto-promote this RAG answer to the Q&A cache (pending admin review)
+                    cur.execute("""
+                        INSERT INTO predetermined_qa
+                            (question, answer, confidence, positive_votes, negative_votes, source, status)
+                        VALUES (%s, %s, %s, %s, %s, 'auto_promoted', 'pending_review')
+                    """, (query, answer, confidence, pos_votes, neg_votes))
+                    logger.info("Promote: Flagged for admin review after %d votes: %s...", pos_votes, query[:60])
+                    promoted = True
+
+            conn.commit()
+        except Exception as e:
+            logger.error("Votes: Error updating votes: %s", e)
     return promoted
+
+
+def approve_pending_qa(qa_id: int) -> bool:
+    """Approve a pending_review entry, making it active in the FAQ cache."""
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE predetermined_qa SET status = 'active' "
+                    "WHERE id = %s AND status = 'pending_review'",
+                    (qa_id,),
+                )
+                updated = cur.rowcount
+            conn.commit()
+            return updated > 0
+        except Exception as e:
+            conn.rollback()
+            logger.error("Failed to approve QA entry %s: %s", qa_id, e)
+            return False
+
+
+def get_pending_qa_entries() -> list:
+    """Return all QA entries awaiting admin review."""
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, question, answer, confidence, created_at
+                    FROM predetermined_qa
+                    WHERE status = 'pending_review'
+                    ORDER BY created_at DESC
+                """)
+                return cur.fetchall()
+        except Exception as e:
+            logger.error("Failed to fetch pending QA entries: %s", e)
+            return []
 
 
 # ─────────────────────────────────────────────
 # Fetch feedback
 # ─────────────────────────────────────────────
 def get_recent_feedback(limit: int = 50) -> list:
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT created_at, query, rating, source, comment
-                FROM bot_feedback
-                ORDER BY created_at DESC
-                LIMIT %s
-            """, (limit,))
-            rows = cur.fetchall()
-            return [
-                {"created_at": r[0], "query": r[1], "rating": r[2], "source": r[3], "comment": r[4]}
-                for r in rows
-            ]
-    except Exception as e:
-        logger.error("Feedback: Fetch failed: %s", e)
-        return []
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT created_at, query, rating, source, comment
+                    FROM bot_feedback
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                """, (limit,))
+                rows = cur.fetchall()
+                return [
+                    {"created_at": r[0], "query": r[1], "rating": r[2], "source": r[3], "comment": r[4]}
+                    for r in rows
+                ]
+        except Exception as e:
+            logger.error("Feedback: Fetch failed: %s", e)
+            return []
 
 
 def get_feedback_stats() -> dict:
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    COUNT(*) AS total,
-                    SUM(CASE WHEN rating = 'positive' THEN 1 ELSE 0 END) AS positive,
-                    SUM(CASE WHEN rating = 'negative' THEN 1 ELSE 0 END) AS negative,
-                    SUM(CASE WHEN source = 'cache' THEN 1 ELSE 0 END) AS from_cache,
-                    SUM(CASE WHEN source = 'rag' THEN 1 ELSE 0 END) AS from_rag
-                FROM bot_feedback
-            """)
-            row = cur.fetchone()
-            total = row[0] or 0
-            return {
-                "total": total,
-                "positive": row[1] or 0,
-                "negative": row[2] or 0,
-                "satisfaction": round((row[1] or 0) / total * 100) if total > 0 else 0,
-                "from_cache": row[3] or 0,
-                "from_rag": row[4] or 0,
-            }
-    except Exception as e:
-        logger.error("Feedback: Stats failed: %s", e)
-        return {}
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN rating = 'positive' THEN 1 ELSE 0 END) AS positive,
+                        SUM(CASE WHEN rating = 'negative' THEN 1 ELSE 0 END) AS negative,
+                        SUM(CASE WHEN source = 'cache' THEN 1 ELSE 0 END) AS from_cache,
+                        SUM(CASE WHEN source = 'rag' THEN 1 ELSE 0 END) AS from_rag
+                    FROM bot_feedback
+                """)
+                row = cur.fetchone()
+                total = row[0] or 0
+                return {
+                    "total": total,
+                    "positive": row[1] or 0,
+                    "negative": row[2] or 0,
+                    "satisfaction": round((row[1] or 0) / total * 100) if total > 0 else 0,
+                    "from_cache": row[3] or 0,
+                    "from_rag": row[4] or 0,
+                }
+        except Exception as e:
+            logger.error("Feedback: Stats failed: %s", e)
+            return {}
 
 
 # ─────────────────────────────────────────────
@@ -547,32 +568,30 @@ def get_feedback_stats() -> dict:
 # ─────────────────────────────────────────────
 def get_flagged_feedback_for_report(days: int = 7) -> list:
     """Return all negative/flagged feedback from the past N days."""
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT created_at, query, answer_snippet, source, comment
-                FROM bot_feedback
-                WHERE rating = 'negative'
-                  AND created_at >= NOW() - (%s * INTERVAL '1 day')
-                ORDER BY created_at DESC
-            """, (int(days),))
-            rows = cur.fetchall()
-            return [
-                {
-                    "created_at": str(r[0]),
-                    "query": r[1],
-                    "answer_snippet": r[2],
-                    "source": r[3],
-                    "comment": r[4] or ""
-                }
-                for r in rows
-            ]
-    except Exception as e:
-        logger.error("Report: Fetch failed: %s", e)
-        return []
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT created_at, query, answer_snippet, source, comment
+                    FROM bot_feedback
+                    WHERE rating = 'negative'
+                      AND created_at >= NOW() - (%s * INTERVAL '1 day')
+                    ORDER BY created_at DESC
+                """, (int(days),))
+                rows = cur.fetchall()
+                return [
+                    {
+                        "created_at": str(r[0]),
+                        "query": r[1],
+                        "answer_snippet": r[2],
+                        "source": r[3],
+                        "comment": r[4] or ""
+                    }
+                    for r in rows
+                ]
+        except Exception as e:
+            logger.error("Report: Fetch failed: %s", e)
+            return []
 
 
 def generate_weekly_report(days: int = 7) -> dict:
@@ -582,19 +601,17 @@ def generate_weekly_report(days: int = 7) -> dict:
 
     # Count auto-promoted Q&As
     promoted_count = 0
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT COUNT(*) FROM predetermined_qa
-                WHERE source = 'auto_promoted'
-                  AND updated_at >= NOW() - (%s * INTERVAL '1 day')
-            """, (int(days),))
-            promoted_count = cur.fetchone()[0] or 0
-    except Exception:
-        pass
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*) FROM predetermined_qa
+                    WHERE source = 'auto_promoted'
+                      AND updated_at >= NOW() - (%s * INTERVAL '1 day')
+                """, (int(days),))
+                promoted_count = cur.fetchone()[0] or 0
+        except Exception:
+            pass
 
     return {
         "stats": stats,
@@ -724,37 +741,36 @@ def send_email_report(report: dict, to_email: str = None):
 # ─────────────────────────────────────────────
 def ensure_section_column(table: str = "studio_manual"):
     """Add section, ingested_at, and version_tag columns if they don't exist."""
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            migrations = [
-                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS section TEXT DEFAULT ''",
-                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT NOW()",
-                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS version_tag TEXT DEFAULT 'v1.0'",
-            ]
-            for stmt in migrations:
-                try:
-                    cur.execute(stmt)
-                except Exception:
-                    conn.rollback()
-        conn.commit()
-        logger.info("DB: section / ingested_at / version_tag columns ensured on %s.", table)
-    except Exception as e:
-        conn.rollback()
-        logger.warning("DB: Could not ensure metadata columns (non-fatal): %s", e)
-    finally:
-        conn.close()
+    table = _validate_table_name(table)
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                migrations = [
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS section TEXT DEFAULT ''",
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT NOW()",
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS version_tag TEXT DEFAULT 'v1.0'",
+                ]
+                for stmt in migrations:
+                    try:
+                        cur.execute(stmt)
+                    except Exception:
+                        conn.rollback()
+            conn.commit()
+            logger.info("DB: section / ingested_at / version_tag columns ensured on %s.", table)
+        except Exception as e:
+            conn.rollback()
+            logger.warning("DB: Could not ensure metadata columns (non-fatal): %s", e)
 
 
 # ─────────────────────────────────────────────
 # Insert chunk (for ingestion)
 # ─────────────────────────────────────────────
 def insert_chunk(doc_id: str, text: str, metadata: dict, get_embedding, table: str = "studio_manual"):
+    table = _validate_table_name(table)
     emb = get_embedding(text)
     section = metadata.get("section", "")
     version_tag = metadata.get("version_tag", "v1.0")
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(f"""
                 INSERT INTO {table} (id, document, embedding, section, version_tag, ingested_at)
@@ -768,8 +784,6 @@ def insert_chunk(doc_id: str, text: str, metadata: dict, get_embedding, table: s
             """, (doc_id, text, emb, section, version_tag))
         conn.commit()
         _invalidate_caches()
-    finally:
-        conn.close()
 
 
 def get_required_env(name: str, cast: Optional[Callable[[str], Any]] = None) -> Any:

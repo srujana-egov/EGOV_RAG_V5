@@ -129,13 +129,17 @@ def _load_qa_cache():
     Load all predetermined Q&A rows into memory (refreshes every 5 min
     to pick up auto-promoted entries). No DB round-trip on every message.
     """
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, question, answer, confidence FROM predetermined_qa")
-            return cur.fetchall()
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, question, answer, confidence FROM predetermined_qa "
+                    "WHERE status = 'active' OR status IS NULL"
+                )
+                return cur.fetchall()
+        except Exception as e:
+            logger.error("QACache: Load failed: %s", e)
+            return []
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -348,7 +352,7 @@ for i, msg in enumerate(st.session_state.messages):
                             _load_qa_cache.clear()
                             _load_faq_embeddings.clear()
                             if promoted:
-                                st.toast("🚀 This answer has been added to the instant FAQ cache!", icon="⚡")
+                                st.toast("📋 Answer flagged for admin review before joining the FAQ cache.", icon="📋")
                             st.session_state.messages[i]["feedback"] = "positive"
                             st.rerun()
                     with col2:
