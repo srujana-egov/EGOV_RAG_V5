@@ -1,0 +1,5 @@
+# Optional dependencies for AWS Secrets Manager support.
+# Install with: pip install -r requirements-aws.txt
+# Only needed when AWS_SECRET_NAME env var is set.
+-r requirements.txt
+boto3>=1.26.0

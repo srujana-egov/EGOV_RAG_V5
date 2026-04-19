@@ -11,8 +11,7 @@ st.title("📊 Query Analytics")
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_query_history():
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT query, answer, source, created_at
@@ -22,13 +21,10 @@ def load_query_history():
             """)
             rows = cur.fetchall()
             return pd.DataFrame(rows, columns=["Query", "Answer", "Source", "Time"])
-    finally:
-        conn.close()
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_feedback():
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT query, response, feedback_type, source, created_at
@@ -38,13 +34,10 @@ def load_feedback():
             """)
             rows = cur.fetchall()
             return pd.DataFrame(rows, columns=["Query", "Response", "Feedback", "Source", "Time"])
-    finally:
-        conn.close()
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_votes():
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT query, vote_type, created_at
@@ -54,8 +47,6 @@ def load_votes():
             """)
             rows = cur.fetchall()
             return pd.DataFrame(rows, columns=["Query", "Vote", "Time"])
-    finally:
-        conn.close()
 
 # ── Summary metrics ──
 col1, col2, col3, col4 = st.columns(4)
