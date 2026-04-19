@@ -27,17 +27,12 @@ from utils import (
 )
 
 # ─────────────────────────────────────────────
-# Page config
+# Domain identity + page config
 # ─────────────────────────────────────────────
-st.set_page_config(page_title=f"{_APP_DOMAIN} Assistant", page_icon="🛠️", layout="wide")
-
-# ─────────────────────────────────────────────
-# Auth gate — password protect the app
-# Set APP_PASSWORD env var (or Streamlit secret) to enable.
-# Leave unset to run without auth (dev mode).
-# ─────────────────────────────────────────────
-_APP_PASSWORD = get_env_var("APP_PASSWORD", "")
 _APP_DOMAIN = get_env_var("APP_DOMAIN", "DIGIT Studio")
+_APP_PASSWORD = get_env_var("APP_PASSWORD", "")
+
+st.set_page_config(page_title=f"{_APP_DOMAIN} Assistant", page_icon="🛠️", layout="wide")
 
 if _APP_PASSWORD:
     if "authenticated" not in st.session_state:
