@@ -142,7 +142,7 @@ def _load_qa_cache():
             return []
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _load_faq_embeddings():
     """
     Embed every FAQ question in one batch API call; cache for 1 hour.

@@ -685,9 +685,12 @@ def send_email_report(report: dict, to_email: str = None):
     flagged = report.get("flagged_items", [])
     promoted = report.get("auto_promoted_count", 0)
 
+    import html as _html
     flagged_rows = "".join(
-        f"<tr><td>{i['created_at'][:10]}</td><td>{i['query']}</td>"
-        f"<td>{i.get('source','')}</td><td>{i.get('comment','')}</td></tr>"
+        f"<tr><td>{_html.escape(str(i['created_at'])[:10])}</td>"
+        f"<td>{_html.escape(str(i['query']))}</td>"
+        f"<td>{_html.escape(str(i.get('source', '')))}</td>"
+        f"<td>{_html.escape(str(i.get('comment', '')))}</td></tr>"
         for i in flagged
     ) or "<tr><td colspan='4'>No flagged items this week 🎉</td></tr>"
 

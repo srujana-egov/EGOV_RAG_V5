@@ -69,31 +69,29 @@ def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
 # ─────────────────────────────────────────────
 def ensure_fts_index():
     """Add tsvector column + GIN index to studio_manual if not present."""
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            # Add fts column if missing
-            cur.execute(f"""
-                ALTER TABLE {TABLE}
-                ADD COLUMN IF NOT EXISTS fts tsvector
-                    GENERATED ALWAYS AS (to_tsvector('english', document)) STORED;
-            """)
-            # Add GIN index if missing
-            cur.execute(f"""
-                CREATE INDEX IF NOT EXISTS {TABLE}_fts_idx
-                ON {TABLE} USING GIN(fts);
-            """)
-            cur.execute(f"""
-                CREATE INDEX IF NOT EXISTS {TABLE}_hnsw_idx
-                ON {TABLE} USING hnsw (embedding vector_cosine_ops);
-            """)
-        conn.commit()
-        logger.info("FTS: tsvector column + GIN index ensured.")
-    except Exception as e:
-        conn.rollback()
-        logger.warning("FTS: Could not create FTS index (non-fatal): %s", e)
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                # Add fts column if missing
+                cur.execute(f"""
+                    ALTER TABLE {TABLE}
+                    ADD COLUMN IF NOT EXISTS fts tsvector
+                        GENERATED ALWAYS AS (to_tsvector('english', document)) STORED;
+                """)
+                # Add GIN index if missing
+                cur.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {TABLE}_fts_idx
+                    ON {TABLE} USING GIN(fts);
+                """)
+                cur.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {TABLE}_hnsw_idx
+                    ON {TABLE} USING hnsw (embedding vector_cosine_ops);
+                """)
+            conn.commit()
+            logger.info("FTS: tsvector column + GIN index ensured.")
+        except Exception as e:
+            conn.rollback()
+            logger.warning("FTS: Could not create FTS index (non-fatal): %s", e)
 
 
 # ─────────────────────────────────────────────
@@ -128,9 +126,7 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
     2. BM25 full-text search (top 2*k candidates via PostgreSQL tsvector)
     3. Fuse with Reciprocal Rank Fusion → return top_k
     """
-    conn = get_conn()
-
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             query_embedding = get_embedding(query)
             fetch = top_k * 2  # retrieve more candidates for fusion
@@ -157,9 +153,6 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5) -> List[Tuple[str, Dict]]:
             bm25_rows = [(row[1], {"id": row[0], "section": row[2], "score": row[3]}) for row in cur.fetchall()]
 
             logger.info("Retrieval: Vector: %d | BM25: %d", len(vector_rows), len(bm25_rows))
-
-    finally:
-        conn.close()
 
     if not vector_rows and not bm25_rows:
         return []

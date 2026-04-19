@@ -9,5 +9,4 @@ python-dotenv>=1.0.0
 tenacity>=8.2.0
 pytest>=8.0.0
 
-# Optional: only needed when using AWS Secrets Manager (set AWS_SECRET_NAME env var)
-boto3>=1.26.0
+# AWS Secrets Manager support is in requirements-aws.txt — install separately if needed
