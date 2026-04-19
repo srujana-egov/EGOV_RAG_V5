@@ -29,7 +29,7 @@ from utils import (
 # ─────────────────────────────────────────────
 # Page config
 # ─────────────────────────────────────────────
-st.set_page_config(page_title="DIGIT Studio Assistant", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title=f"{_APP_DOMAIN} Assistant", page_icon="🛠️", layout="wide")
 
 # ─────────────────────────────────────────────
 # Auth gate — password protect the app
@@ -37,13 +37,14 @@ st.set_page_config(page_title="DIGIT Studio Assistant", page_icon="🛠️", lay
 # Leave unset to run without auth (dev mode).
 # ─────────────────────────────────────────────
 _APP_PASSWORD = get_env_var("APP_PASSWORD", "")
+_APP_DOMAIN = get_env_var("APP_DOMAIN", "DIGIT Studio")
 
 if _APP_PASSWORD:
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
 
     if not st.session_state.authenticated:
-        st.title("🔒 DIGIT Studio Assistant")
+        st.title(f"🔒 {_APP_DOMAIN} Assistant")
         with st.form("login_form"):
             pwd = st.text_input("Enter access password", type="password")
             submitted = st.form_submit_button("Login")
@@ -104,7 +105,7 @@ def _validate_query(query: str):
     for pattern in _INJECTION_PATTERNS:
         if pattern in lower:
             logger.warning("Prompt injection attempt detected: %r", q[:80])
-            return None, "⚠️ That message contains content that can't be processed. Please ask a question about DIGIT Studio."
+            return None, f"⚠️ That message contains content that can't be processed. Please ask a question about {_APP_DOMAIN}."
     return q, None
 
 # Ensure DB tables and indexes exist
@@ -300,9 +301,9 @@ if "pending_chip_query" not in st.session_state:
 # ─────────────────────────────────────────────
 # UI header
 # ─────────────────────────────────────────────
-st.title("🛠️ DIGIT Studio Assistant")
+st.title(f"🛠️ {_APP_DOMAIN} Assistant")
 st.caption(
-    "Ask anything about DIGIT Studio  •  "
+    f"Ask anything about {_APP_DOMAIN}  •  "
     "Conversation is remembered within this session  •  "
     "⚡ = instant cached answer"
 )
@@ -375,7 +376,7 @@ for i, msg in enumerate(st.session_state.messages):
 # ─────────────────────────────────────────────
 # Query input (chat box always rendered; chip clicks override it)
 # ─────────────────────────────────────────────
-chat_input = st.chat_input("Ask a question about DIGIT Studio...")
+chat_input = st.chat_input(f"Ask a question about {_APP_DOMAIN}...")
 
 # Chip click sets pending_chip_query; on next render it becomes the query
 if st.session_state.pending_chip_query:
@@ -474,7 +475,7 @@ if query:
                         for chunk in rag_gen:
                             full_answer += chunk
                         source = "out_of_domain"
-                        st.write("⚠️ Query is outside DIGIT Studio scope.")
+                        st.write(f"⚠️ Query is outside {_APP_DOMAIN} scope.")
                         status.update(label="⚠️ Outside domain", state="complete", expanded=False)
                     else:
                         st.write("✅ Relevant content found — generating answer.")
