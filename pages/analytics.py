@@ -14,7 +14,7 @@ def load_query_history():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT query, answer, source, created_at
+                SELECT query, answer_snippet, source, created_at
                 FROM query_history
                 ORDER BY created_at DESC
                 LIMIT 500
@@ -27,7 +27,7 @@ def load_feedback():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT query, response, feedback_type, source, created_at
+                SELECT query, answer_snippet, rating, source, created_at
                 FROM bot_feedback
                 ORDER BY created_at DESC
                 LIMIT 200

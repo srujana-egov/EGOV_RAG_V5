@@ -497,8 +497,9 @@ if query:
                 try:
                     for chunk in rag_gen:
                         yield chunk
-                except Exception:
-                    pass
+                except Exception as _stream_err:
+                    logger.error("Stream interrupted mid-response: %s", _stream_err)
+                    yield "\n\n⚠️ *Response was interrupted. Please try again.*"
 
             answer = st.write_stream(_remaining_gen())
             timings["generate_ms"] = int((time.perf_counter() - t_stream_start) * 1000)

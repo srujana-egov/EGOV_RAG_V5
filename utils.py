@@ -730,7 +730,7 @@ def send_email_report(report: dict, to_email: str = None):
     msg["To"] = recipient
     msg.attach(MIMEText(html, "html"))
 
-    with smtplib.SMTP(smtp_host, smtp_port) as server:
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
         server.starttls()
         if smtp_user and smtp_pass:
             server.login(smtp_user, smtp_pass)
