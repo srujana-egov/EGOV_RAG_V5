@@ -517,6 +517,8 @@ if query:
             st.caption(
                 f"⏱ Rewrite {rewrite_ms}ms · Retrieve {retrieve_ms}ms · "
                 f"Generate {generate_ms}ms · Total {total_ms}ms"
+                + (f" · {timings.get('query_variants', 1)} queries" if timings.get('query_variants', 1) > 1 else "")
+                + (f" · §{timings.get('section_hint')}" if timings.get('section_hint') else "")
             )
 
         # Render chip buttons immediately after the answer

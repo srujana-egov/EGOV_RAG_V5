@@ -1,0 +1,195 @@
+{
+  "version": "1.0",
+  "description": "Golden evaluation set for DIGIT Studio RAG assistant. Update expected_chunk_ids after ingestion.",
+  "use_cases": {
+    "digit_studio": [
+      {
+        "id": "ds_001",
+        "question": "What is DIGIT Studio?",
+        "expected_answer_contains": ["low-code", "government", "digital services", "platform"],
+        "expected_section": "Overview",
+        "expected_chunk_ids": [],
+        "notes": "Core overview question — should always hit FAQ or high-confidence RAG"
+      },
+      {
+        "id": "ds_002",
+        "question": "What field types are available in DIGIT Studio forms?",
+        "expected_answer_contains": ["text", "dropdown", "date", "numeric"],
+        "expected_section": "field",
+        "expected_chunk_ids": [],
+        "notes": "Should retrieve field type chunk"
+      },
+      {
+        "id": "ds_003",
+        "question": "How do I configure a workflow in DIGIT Studio?",
+        "expected_answer_contains": ["state", "action", "transition", "workflow"],
+        "expected_section": "workflow",
+        "expected_chunk_ids": [],
+        "notes": "Workflow configuration — step-by-step expected"
+      },
+      {
+        "id": "ds_004",
+        "question": "How do I set up SMS and email notifications?",
+        "expected_answer_contains": ["notification", "SMS", "email", "template"],
+        "expected_section": "notification",
+        "expected_chunk_ids": [],
+        "notes": "Notification config — should retrieve notification schema chunk"
+      },
+      {
+        "id": "ds_005",
+        "question": "What roles and permissions are available?",
+        "expected_answer_contains": ["role", "permission", "access", "employee"],
+        "expected_section": "role",
+        "expected_chunk_ids": [],
+        "notes": "RBAC / access control question"
+      },
+      {
+        "id": "ds_006",
+        "question": "How do I upload and configure documents in a service?",
+        "expected_answer_contains": ["document", "upload", "file type", "attachment"],
+        "expected_section": "document",
+        "expected_chunk_ids": [],
+        "notes": "Document upload config"
+      },
+      {
+        "id": "ds_007",
+        "question": "How do I deploy an application to production?",
+        "expected_answer_contains": ["deploy", "environment", "release"],
+        "expected_section": "deploy",
+        "expected_chunk_ids": [],
+        "notes": "Deployment steps — should retrieve deploy chunk"
+      },
+      {
+        "id": "ds_008",
+        "question": "What are the steps to go live with DIGIT Studio?",
+        "expected_answer_contains": ["go live", "checklist", "environment"],
+        "expected_section": "deploy",
+        "expected_chunk_ids": [],
+        "notes": "Go-live steps"
+      },
+      {
+        "id": "ds_009",
+        "question": "How does the inbox search work?",
+        "expected_answer_contains": ["inbox", "search", "filter", "assign"],
+        "expected_section": "inbox",
+        "expected_chunk_ids": [],
+        "notes": "Inbox/search config"
+      },
+      {
+        "id": "ds_010",
+        "question": "How do I configure billing and fee calculation?",
+        "expected_answer_contains": ["billing", "fee", "calculator", "payment"],
+        "expected_section": "billing",
+        "expected_chunk_ids": [],
+        "notes": "Billing config chunk"
+      },
+      {
+        "id": "ds_011",
+        "question": "What is master data management (MDMS)?",
+        "expected_answer_contains": ["master data", "MDMS", "configuration"],
+        "expected_section": "service",
+        "expected_chunk_ids": [],
+        "notes": "MDMS explanation"
+      },
+      {
+        "id": "ds_012",
+        "question": "How do I add localisation support to my service?",
+        "expected_answer_contains": ["localisation", "language", "translation"],
+        "expected_section": "localisation",
+        "expected_chunk_ids": [],
+        "notes": "Localisation/i18n config"
+      },
+      {
+        "id": "ds_013",
+        "question": "How do checklists work in DIGIT Studio?",
+        "expected_answer_contains": ["checklist", "question", "inspection"],
+        "expected_section": "checklist",
+        "expected_chunk_ids": [],
+        "notes": "Checklist question schema"
+      },
+      {
+        "id": "ds_014",
+        "question": "How does address and boundary data work?",
+        "expected_answer_contains": ["address", "boundary", "location"],
+        "expected_section": "address",
+        "expected_chunk_ids": [],
+        "notes": "Address/boundary fields"
+      },
+      {
+        "id": "ds_015",
+        "question": "What is the difference between an employee portal and citizen portal?",
+        "expected_answer_contains": ["employee", "citizen", "portal"],
+        "expected_section": "Overview",
+        "expected_chunk_ids": [],
+        "notes": "Portal distinction — overview-level question"
+      },
+      {
+        "id": "ds_016",
+        "question": "What is totally unrelated to DIGIT Studio like the weather today?",
+        "expected_answer_contains": ["outside the scope", "DIGIT Studio"],
+        "expected_section": null,
+        "expected_chunk_ids": [],
+        "expected_out_of_domain": true,
+        "notes": "Out-of-domain detection test — must return OOD message"
+      },
+      {
+        "id": "ds_017",
+        "question": "How do I configure service-specific settings?",
+        "expected_answer_contains": ["service", "configuration", "module"],
+        "expected_section": "service",
+        "expected_chunk_ids": [],
+        "notes": "Service config overview"
+      },
+      {
+        "id": "ds_018",
+        "question": "What workflow states are available?",
+        "expected_answer_contains": ["state", "workflow", "transition"],
+        "expected_section": "workflow",
+        "expected_chunk_ids": [],
+        "notes": "Workflow state schema"
+      }
+    ],
+    "hcm": [
+      {
+        "id": "hcm_001",
+        "question": "What is the Health Campaign Management module?",
+        "expected_answer_contains": ["health", "campaign", "HCM"],
+        "expected_section": "Overview",
+        "expected_chunk_ids": [],
+        "notes": "HCM overview — placeholder until HCM docs are ingested"
+      },
+      {
+        "id": "hcm_002",
+        "question": "How do I register a beneficiary in HCM?",
+        "expected_answer_contains": ["beneficiary", "register", "household"],
+        "expected_section": "beneficiary",
+        "expected_chunk_ids": [],
+        "notes": "Beneficiary registration flow"
+      },
+      {
+        "id": "hcm_003",
+        "question": "How does stock management work in a health campaign?",
+        "expected_answer_contains": ["stock", "inventory", "warehouse"],
+        "expected_section": "stock",
+        "expected_chunk_ids": [],
+        "notes": "Stock/inventory management"
+      },
+      {
+        "id": "hcm_004",
+        "question": "What roles exist in HCM for field workers?",
+        "expected_answer_contains": ["field worker", "role", "supervisor"],
+        "expected_section": "staff",
+        "expected_chunk_ids": [],
+        "notes": "HCM staff roles"
+      },
+      {
+        "id": "hcm_005",
+        "question": "How do I set up a new health campaign?",
+        "expected_answer_contains": ["campaign", "setup", "configuration"],
+        "expected_section": "campaign",
+        "expected_chunk_ids": [],
+        "notes": "Campaign creation flow"
+      }
+    ]
+  }
+}
