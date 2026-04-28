@@ -137,7 +137,8 @@ _SECTION_KEYWORDS: list = [
     (("service", "module", "application", "mdms", "master data"), "service"),
     (("address", "boundary", "location", "geography"), "address"),
     # ── HCM sections ──────────────────────────────────────────────────────
-    (("overview", "what is hcm", "about hcm", "digit hcm", "platform"), "overview"),
+    # Note: HCM overview should match before generic campaign keyword
+    (("what is hcm", "about hcm", "digit hcm", "platform overview"), "overview"),
     (("register", "registration", "household", "beneficiary", "delivery", "doorstep"), "registration_delivery"),
     (("console", "configure", "configuration", "no-code", "launch campaign"), "console"),
     (("hrms", "human resource", "workforce", "staff management", "user creation"), "hrms"),
