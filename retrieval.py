@@ -205,9 +205,10 @@ def hybrid_retrieve_pg(query: str, top_k: int = 5, section_hint: str = None) -> 
             section_params_vector = [query_embedding, query_embedding, fetch]
             section_params_bm25 = [query, query, fetch]
             if section_hint:
+                # SQL order: SELECT embedding, WHERE section_hint, ORDER BY embedding, LIMIT fetch
                 section_filter = "AND section ILIKE %s"
-                section_params_vector = [query_embedding, query_embedding, f"%{section_hint}%", fetch]
-                section_params_bm25 = [query, query, f"%{section_hint}%", fetch]
+                section_params_vector = [query_embedding, f"%{section_hint}%", query_embedding, fetch]
+                section_params_bm25 = [query, f"%{section_hint}%", query, fetch]
 
             # ── Vector search ──
             cur.execute(f"""
