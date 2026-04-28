@@ -122,6 +122,7 @@ def _rrf(vector_rows: list, bm25_rows: list, k: int = 60) -> List[Tuple[str, flo
 # ─────────────────────────────────────────────
 
 _SECTION_KEYWORDS: list = [
+    # ── DIGIT Studio sections ──────────────────────────────────────────────
     # (keywords_tuple, section_substring)
     (("notification", "sms", "email alert", "notify"), "notification"),
     (("workflow", "process", "state", "transition", "action"), "workflow"),
@@ -135,11 +136,26 @@ _SECTION_KEYWORDS: list = [
     (("localisation", "localization", "language", "translation", "i18n"), "localisation"),
     (("service", "module", "application", "mdms", "master data"), "service"),
     (("address", "boundary", "location", "geography"), "address"),
-    # HCM-specific
-    (("campaign", "health campaign", "hcm"), "campaign"),
-    (("beneficiary", "household", "registration"), "beneficiary"),
-    (("stock", "inventory", "warehouse", "supply"), "stock"),
-    (("supervisor", "field worker", "distributor"), "staff"),
+    # ── HCM sections ──────────────────────────────────────────────────────
+    (("overview", "what is hcm", "about hcm", "digit hcm", "platform"), "overview"),
+    (("register", "registration", "household", "beneficiary", "delivery", "doorstep"), "registration_delivery"),
+    (("console", "configure", "configuration", "no-code", "launch campaign"), "console"),
+    (("hrms", "human resource", "workforce", "staff management", "user creation"), "hrms"),
+    (("attendance", "qr code", "roll call", "mark attendance"), "attendance"),
+    (("dashboard", "report", "kpi", "real-time data", "visualis"), "dashboard"),
+    (("microplan", "microplanning", "target setting", "population estimate", "resource allocation"), "microplanning"),
+    (("payment", "pay worker", "compensat", "stipend", "bill generat"), "payment"),
+    (("inventory", "stock", "warehouse", "supply chain", "commodity", "reconcili"), "inventory"),
+    (("complaint", "grievance", "resolve", "escalat", "sla"), "complaints"),
+    (("itn", "insecticide", "bednet", "bed net", "llin", "net distribution"), "itn_campaign"),
+    (("smc", "seasonal malaria", "chemoprevention", "dose", "antimalarial drug"), "smc_campaign"),
+    (("irs", "indoor residual", "spray", "spraying", "insecticide-treated"), "irs_campaign"),
+    (("polio", "vaccination", "immunis", "immuniz", "lqas"), "polio_campaign"),
+    (("ntd", "neglected tropical", "lymphatic filariasis", "drug distribut", "cdd"), "ntd_campaign"),
+    (("nutrition", "vitamin a", "supplement", "iron", "folic acid", "zinc"), "nutrition_campaign"),
+    (("partner", "implementation partner", "ngos", "gates foundation", "who afro"), "partners"),
+    (("implementation", "toolkit", "readiness", "infrastructure model", "on premise", "sovereign"), "implementation"),
+    (("faq", "frequently asked", "how does hcm", "what types of campaign"), "faq"),
 ]
 
 
